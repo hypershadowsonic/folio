@@ -1,0 +1,173 @@
+// ─── Portfolio ────────────────────────────────────────────────────────────────
+
+export interface Portfolio {
+  id: string
+  name: string
+  baseCurrency: 'TWD'           // base currency for valuation
+  supportedCurrencies: ('USD' | 'TWD')[]
+  monthlyDCABudget: number
+  monthlyDCABudgetCurrency: 'USD' | 'TWD'
+  defaultRebalanceStrategy: 'soft' | 'hard'
+  defaultAllocationMethod: 'proportional-to-drift' | 'equal-weight'
+  createdAt: Date
+  updatedAt: Date
+}
+
+export interface Holding {
+  id: string
+  portfolioId: string
+  ticker: string
+  name: string
+  sleeveId: string
+  targetAllocationPct: number   // 0-100
+  driftThresholdPct: number     // default 2
+  currency: 'USD' | 'TWD'      // denomination of the holding
+}
+
+export interface Sleeve {
+  id: string
+  portfolioId: string
+  name: string
+  targetAllocationPct: number   // sum of child holdings
+  color: string                 // for visualization
+}
+
+// ─── Cash & FX ────────────────────────────────────────────────────────────────
+
+export interface CashAccount {
+  id: string
+  portfolioId: string
+  currency: 'USD' | 'TWD'
+  balance: number               // current balance, updated by operations
+}
+
+export interface FxTransaction {
+  id: string
+  portfolioId: string
+  timestamp: Date
+  fromCurrency: 'USD' | 'TWD'
+  toCurrency: 'USD' | 'TWD'
+  fromAmount: number
+  toAmount: number
+  rate: number                  // toAmount / fromAmount
+  fees: number
+  feesCurrency: 'USD' | 'TWD'
+  note?: string
+}
+
+export interface FxLot {
+  id: string
+  fxTransactionId: string       // which conversion created this lot
+  currency: 'USD' | 'TWD'      // the currency of this lot
+  originalAmount: number        // amount when created
+  remainingAmount: number       // unconsumed amount (decreases as trades use it)
+  rate: number                  // FX rate at time of conversion
+  timestamp: Date               // for FIFO ordering
+}
+
+// ─── Operations ───────────────────────────────────────────────────────────────
+
+// Extracted as a named union for reuse across the codebase
+export type OperationType =
+  | 'BUY'
+  | 'SELL'
+  | 'REBALANCE'
+  | 'DCA'
+  | 'TACTICAL_ROTATION'
+  | 'DRAWDOWN_DEPLOY'
+  | 'DIVIDEND_REINVEST'
+  | 'FX_EXCHANGE'
+  | 'CASH_DEPOSIT'
+  | 'CASH_WITHDRAWAL'
+
+export interface Operation {
+  id: string
+  portfolioId: string
+  type: OperationType
+  timestamp: Date
+  entries: OperationEntry[]     // trade legs (empty for FX/CASH types)
+  fxTransactionId?: string      // linked FX transaction (for FX_EXCHANGE type)
+  cashFlow?: CashFlow           // linked cash movement (for CASH_DEPOSIT/WITHDRAWAL)
+  rationale: string             // required
+  tag?: string
+  snapshotBefore: PortfolioSnapshot
+  snapshotAfter: PortfolioSnapshot
+}
+
+export interface OperationEntry {
+  holdingId: string
+  side: 'BUY' | 'SELL'
+  shares: number                // fractional amounts allowed (e.g., 0.573)
+  pricePerShare: number         // in holding's currency
+  fees: number
+  currency: 'USD' | 'TWD'
+  fxCostBasis?: {               // populated on BUY of foreign-currency holdings
+    fxLotsConsumed: { lotId: string; amount: number; rate: number }[]
+    blendedRate: number         // weighted average rate from consumed lots
+    baseCurrencyCost: number    // total cost in TWD
+  }
+}
+
+export interface CashFlow {
+  currency: 'USD' | 'TWD'
+  amount: number                // positive = deposit, negative = withdrawal
+  note?: string
+}
+
+// ─── Snapshots ────────────────────────────────────────────────────────────────
+
+export interface PortfolioSnapshot {
+  timestamp: Date
+  totalValueBase: number        // total value in base currency (TWD)
+  currentFxRate: number         // USD/TWD rate used for this snapshot
+  cashBalances: { currency: string; balance: number }[]
+  holdings: HoldingSnapshot[]
+}
+
+export interface HoldingSnapshot {
+  holdingId: string
+  shares: number
+  pricePerShare: number         // in holding's currency
+  marketValue: number           // in holding's currency
+  marketValueBase: number       // in TWD
+  costBasis: number             // in holding's currency
+  costBasisBase: number         // in TWD (using FIFO FX rates)
+  allocationPct: number
+  driftFromTarget: number
+}
+
+// ─── Ammunition Pool ──────────────────────────────────────────────────────────
+
+export interface AmmunitionPool {
+  portfolioId: string
+  tier1: { holdingId: string; value: number; deployTriggerPct: number }
+  tier2: { holdingId: string; value: number; deployTriggerPct: number }
+}
+
+// ─── DCA Planner (derived types, used by Phase 4 engine) ─────────────────────
+
+export type RebalanceStrategy = 'soft' | 'hard'
+export type AllocationMethod = 'proportional-to-drift' | 'equal-weight'
+
+export interface TradePlanRow {
+  holdingId: string
+  ticker: string
+  side: 'BUY' | 'SELL'
+  suggestedShares: number
+  estimatedCost: number         // in holding's currency
+  currency: 'USD' | 'TWD'
+  // filled in by user after execution in IBKR
+  actualPricePerShare?: number
+  actualFees?: number
+}
+
+export interface DcaPlan {
+  strategy: RebalanceStrategy
+  allocationMethod: AllocationMethod
+  budget: number
+  budgetCurrency: 'USD' | 'TWD'
+  rows: TradePlanRow[]
+  totalEstimatedCost: number
+  cashSufficient: boolean
+  cashShortfall?: number
+}
