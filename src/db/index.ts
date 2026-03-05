@@ -3,3 +3,4 @@
 export { db, FolioDB, seedDefaultPortfolio } from './database'
 export type { SnapshotRecord } from './database'
 export * from './hooks'
+export { captureSnapshot } from './snapshotService'

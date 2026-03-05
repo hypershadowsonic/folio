@@ -9,6 +9,18 @@ export interface Portfolio {
   monthlyDCABudgetCurrency: 'USD' | 'TWD'
   defaultRebalanceStrategy: 'soft' | 'hard'
   defaultAllocationMethod: 'proportional-to-drift' | 'equal-weight'
+  /**
+   * The TWD/USD rate entered during setup. Used as a fallback when no real
+   * FX lots exist yet (e.g. right after first-run wizard, before any FX
+   * exchange is logged). Real rates from FxLots take precedence.
+   */
+  initialFxRate?: number
+  /**
+   * User-set manual override for the current valuation rate (TWD per USD).
+   * When set, this takes precedence over the auto-derived rate from FxLots,
+   * allowing ad-hoc rate corrections between actual FX transactions.
+   */
+  fxRateOverride?: number
   createdAt: Date
   updatedAt: Date
 }

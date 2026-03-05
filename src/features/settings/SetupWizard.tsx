@@ -794,6 +794,8 @@ export function SetupWizard() {
       const portfolioId = crypto.randomUUID()
       const now = new Date()
 
+      const parsedFxRate = parseFloat(fxRate) || 0
+
       const portfolio: Portfolio = {
         id: portfolioId,
         name: portfolioName.trim(),
@@ -803,6 +805,7 @@ export function SetupWizard() {
         monthlyDCABudgetCurrency: budgetCurrency,
         defaultRebalanceStrategy: strategy,
         defaultAllocationMethod: method,
+        initialFxRate: parsedFxRate > 0 ? parsedFxRate : undefined,
         createdAt: now,
         updatedAt: now,
       }
@@ -835,7 +838,7 @@ export function SetupWizard() {
       // fromAmount / toAmount are 0 — this is not a real conversion, just a rate anchor.
       // The FIFO engine (Phase 2) ignores zero-amount transactions when computing lots.
       const fxTransactions: FxTransaction[] = []
-      if (parseFloat(fxRate) > 0) {
+      if (parsedFxRate > 0) {
         fxTransactions.push({
           id: crypto.randomUUID(),
           portfolioId,
@@ -844,7 +847,7 @@ export function SetupWizard() {
           toCurrency:   'USD',
           fromAmount:   0,
           toAmount:     0,
-          rate:         parseFloat(fxRate),
+          rate:         parsedFxRate,
           fees:         0,
           feesCurrency: 'TWD',
           note:         'Initial setup rate',
