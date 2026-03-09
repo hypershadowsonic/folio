@@ -34,6 +34,11 @@ export interface Holding {
   targetAllocationPct: number   // 0-100
   driftThresholdPct: number     // default 2
   currency: 'USD' | 'TWD'      // denomination of the holding
+  // ── Position tracking (updated by operationService on every trade) ─────────
+  currentShares?: number              // accumulated net shares
+  currentPricePerShare?: number       // last manually-entered price per share
+  averageCostBasis?: number           // weighted avg cost per share in holding's currency
+  averageCostBasisBase?: number       // weighted avg cost per share in TWD (via FIFO FX)
 }
 
 export interface Sleeve {
