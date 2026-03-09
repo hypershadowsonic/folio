@@ -33,14 +33,21 @@ export interface ConsumeFxLotsResult {
  * Returns which lots were consumed, the weighted-average blended rate,
  * the total base-currency cost, and the mutated lots array.
  *
- * Throws InsufficientFxLotsError if the lots don't cover the full amount.
+ * If fallbackRate is provided and lots don't fully cover the amount, the
+ * shortfall is filled at fallbackRate (e.g. portfolio's current FX rate),
+ * recorded as a synthetic consumed entry with lotId='cash'. This allows
+ * USD sell proceeds (which live in the cash balance but not in FX lots) to
+ * fund subsequent USD BUYs without throwing InsufficientFxLotsError.
+ *
+ * Throws InsufficientFxLotsError only when no fallbackRate is provided.
  */
 export function consumeFxLots(
   lots: FxLot[],
   amountNeeded: number,
+  fallbackRate?: number,
 ): ConsumeFxLotsResult {
   const totalAvailable = lots.reduce((sum, l) => sum + l.remainingAmount, 0)
-  if (totalAvailable < amountNeeded) {
+  if (totalAvailable < amountNeeded && fallbackRate === undefined) {
     throw new InsufficientFxLotsError(amountNeeded - totalAvailable)
   }
 
@@ -57,6 +64,12 @@ export function consumeFxLots(
     consumed.push({ lotId: lot.id, amount: take, rate: lot.rate })
     lot.remainingAmount -= take
     remaining -= take
+  }
+
+  // Fill any shortfall at fallbackRate (USD cash from sell proceeds)
+  if (remaining > 0 && fallbackRate !== undefined) {
+    consumed.push({ lotId: 'cash', amount: remaining, rate: fallbackRate })
+    remaining = 0
   }
 
   const baseCurrencyCost = consumed.reduce(

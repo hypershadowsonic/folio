@@ -272,9 +272,8 @@ function HistoryRow({ op, holdingMap }: HistoryRowProps) {
     }).filter(Boolean) as { id: string; before: HoldingSnapshot | null; after: HoldingSnapshot | null }[]
   }, [op, affectedIds])
 
-  // Cash balance diff for FX or cash ops
+  // Cash balance diff for all operation types
   const cashDiff = useMemo(() => {
-    if (op.entries.length > 0) return null
     const currencies = ['TWD', 'USD'] as const
     return currencies.map(cur => {
       const before = op.snapshotBefore.cashBalances.find(b => b.currency === cur)?.balance ?? 0

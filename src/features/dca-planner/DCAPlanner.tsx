@@ -39,6 +39,7 @@ import {
   generateRebalancePlan,
 } from '@/engine/rebalance'
 import type { TradePlan } from '@/engine/rebalance'
+import { Info } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -315,6 +316,12 @@ export default function DCAPlanner() {
     )
   }, [planGenerated, holdingStates, budget, budgetCurrency, fxRate, strategy, method, cashBalances])
 
+  // ── Pre-generation advisories ────────────────────────────────────────────────
+  const noPriceCount = useMemo(
+    () => holdingStates.filter(h => h.currentPricePerShare <= 0).length,
+    [holdingStates],
+  )
+
   // Sorted trades: SELL first, BUY second, HOLD last
   const sortedTrades = useMemo(
     () => [...(plan?.trades ?? [])].sort((a, b) => ACTION_ORDER[a.action] - ACTION_ORDER[b.action]),
@@ -322,6 +329,20 @@ export default function DCAPlanner() {
   )
   const activeTrades = sortedTrades.filter(t => t.action !== 'HOLD')
   const holdTrades   = sortedTrades.filter(t => t.action === 'HOLD')
+
+  // ── Post-generation advisories ───────────────────────────────────────────────
+  const currencyMismatchNote = useMemo(() => {
+    if (!plan) return null
+    const usdBuys = activeTrades.filter(t => t.action === 'BUY' && t.currency === 'USD').length
+    const twdBuys = activeTrades.filter(t => t.action === 'BUY' && t.currency === 'TWD').length
+    if (budgetCurrency === 'TWD' && usdBuys > 0) {
+      return `Budget is in TWD but ${usdBuys} trade${usdBuys > 1 ? 's' : ''} require${usdBuys === 1 ? 's' : ''} USD. These will draw from your USD cash balance — you may need to exchange currency first.`
+    }
+    if (budgetCurrency === 'USD' && twdBuys > 0) {
+      return `Budget is in USD but ${twdBuys} trade${twdBuys > 1 ? 's' : ''} require${twdBuys === 1 ? 's' : ''} TWD. These will draw from your TWD cash balance — you may need to exchange currency first.`
+    }
+    return null
+  }, [plan, activeTrades, budgetCurrency])
 
   // ── Execution inputs ─────────────────────────────────────────────────────────
   const [executions, setExecutions] = useState<Record<string, RowExecution>>({})
@@ -553,6 +574,17 @@ export default function DCAPlanner() {
                 Add holdings in Settings before generating a plan.
               </p>
             )}
+
+            {/* No-price advisory (pre-generation) */}
+            {noPriceCount > 0 && (
+              <div className="flex items-start gap-2 rounded-lg border border-amber-500/40 bg-amber-500/5 px-3 py-2.5">
+                <AlertTriangle className="h-3.5 w-3.5 text-amber-500 shrink-0 mt-0.5" />
+                <p className="text-xs text-amber-700 dark:text-amber-400 leading-relaxed">
+                  {noPriceCount} holding{noPriceCount > 1 ? 's have' : ' has'} no price data and will be excluded from the plan.
+                  Update prices on the Dashboard first.
+                </p>
+              </div>
+            )}
           </div>
         </SectionCard>
 
@@ -609,6 +641,28 @@ export default function DCAPlanner() {
                 <p className="text-xs text-emerald-700 dark:text-emerald-400 font-medium">
                   Cash sufficient for this plan.
                 </p>
+              </div>
+            )}
+
+            {/* Currency mismatch advisory (case 7) */}
+            {currencyMismatchNote && (
+              <div className="flex items-start gap-2 rounded-xl border border-amber-500/40 bg-amber-500/5 px-4 py-3">
+                <Info className="h-4 w-4 text-amber-500 shrink-0 mt-0.5" />
+                <p className="text-xs text-amber-700 dark:text-amber-400 leading-relaxed">
+                  {currencyMismatchNote}
+                </p>
+              </div>
+            )}
+
+            {/* Engine warnings (skipped holdings, dust trades) */}
+            {plan.warnings.length > 0 && (
+              <div className="space-y-1">
+                {plan.warnings.map((w, i) => (
+                  <div key={i} className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2">
+                    <AlertTriangle className="h-3.5 w-3.5 text-amber-500 shrink-0 mt-0.5" />
+                    <p className="text-xs text-amber-700 dark:text-amber-400 leading-relaxed">{w}</p>
+                  </div>
+                ))}
               </div>
             )}
 
@@ -679,13 +733,30 @@ export default function DCAPlanner() {
                 )}
               </div>
 
-              {activeTrades.length === 0 ? (
-                <div className="rounded-xl border border-border bg-card px-4 py-8 text-center space-y-2">
-                  <RefreshCw className="h-5 w-5 text-muted-foreground mx-auto" />
-                  <p className="text-sm font-medium">Portfolio is balanced</p>
-                  <p className="text-xs text-muted-foreground">No trades needed for the current settings.</p>
-                </div>
-              ) : (
+              {activeTrades.length === 0 ? (() => {
+                // Distinguish between "all overweight" and "balanced/no budget"
+                const someOverweight = plan.trades.some(t => t.reason.includes('Overweight'))
+                return (
+                  <div className="rounded-xl border border-border bg-card px-4 py-8 text-center space-y-2">
+                    <RefreshCw className="h-5 w-5 text-muted-foreground mx-auto" />
+                    {someOverweight ? (
+                      <>
+                        <p className="text-sm font-medium">All holdings at or above target</p>
+                        <p className="text-xs text-muted-foreground">
+                          {strategy === 'soft'
+                            ? 'Soft rebalance never buys overweight holdings. Switch to Hard to trim them.'
+                            : 'No underweight holdings to buy into.'}
+                        </p>
+                      </>
+                    ) : (
+                      <>
+                        <p className="text-sm font-medium">Portfolio is balanced</p>
+                        <p className="text-xs text-muted-foreground">No trades needed for the current settings.</p>
+                      </>
+                    )}
+                  </div>
+                )
+              })() : (
                 <div className="overflow-x-auto rounded-xl border border-border bg-card">
                   <table className="w-full text-sm min-w-[600px]">
                     <thead>

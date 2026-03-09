@@ -15,6 +15,7 @@ import {
   generateSoftRebalancePlan,
   generateHardRebalancePlan,
   calculateCurrentAllocations,
+  DUST_SHARES,
 } from './rebalance'
 import type { HoldingState } from './rebalance'
 import type { Holding } from '@/types'
@@ -392,8 +393,25 @@ describe('generateHardRebalancePlan – cross-currency: TWD sell proceeds cannot
 // ─── Test 6: All holdings on target ──────────────────────────────────────────
 
 describe('generateSoftRebalancePlan – all holdings on target', () => {
-  //  Every holding is exactly at target; $1,000 budget.
-  //  With proportional-to-drift: no underweight → no underweight holdings → all HOLD.
+  //  Every holding is exactly at target; $1,000 USD budget.
+  //
+  //  New behaviour (edge case 2 fix): when no holdings are underweight,
+  //  the engine falls back to at-target (drift = 0) holdings so the budget
+  //  is never silently discarded. Proportional-to-drift with all drifts = 0
+  //  falls back to proportional-to-target weighting.
+  //
+  //  Portfolio: 5 holdings, targets sum to 100%.
+  //    VOO  40%, VHT 20%, SMH 15%, 0050 10%, GLDM 15%
+  //
+  //  Proportional-to-target allocation of $1,000 USD (= 32,000 TWD base):
+  //    VOO  (40%): 12,800 TWD base → $400 USD → 0.800 shares
+  //    VHT  (20%):  6,400 TWD base → $200 USD → 0.667 shares
+  //    SMH  (15%):  4,800 TWD base → $150 USD → 0.600 shares
+  //    0050 (10%):  3,200 TWD base → 3,200 TWD (currency is TWD) → 17.78 shares
+  //    GLDM (15%):  4,800 TWD base → $150 USD → 3.000 shares
+  //
+  //  Equal-weight allocation ($1,000 USD = 32,000 TWD base ÷ 5 = 6,400 TWD each):
+  //    USD holdings: $200 each; 0050: 6,400 TWD.
 
   const TOTAL_AT_TARGET = 1_000_000
   const atTarget: HoldingState[] = [
@@ -404,27 +422,149 @@ describe('generateSoftRebalancePlan – all holdings on target', () => {
     makeHolding('gldm', 'GLDM', 'USD',  50, 15, 15, TOTAL_AT_TARGET),
   ]
 
-  const softPlan = generateSoftRebalancePlan(atTarget, 1000, 'USD', FX, 'proportional-to-drift', NO_CASH)
+  const softPlan  = generateSoftRebalancePlan(atTarget, 1000, 'USD', FX, 'proportional-to-drift', NO_CASH)
   const equalPlan = generateSoftRebalancePlan(atTarget, 1000, 'USD', FX, 'equal-weight', NO_CASH)
 
-  it('soft proportional: all trades are HOLD', () => {
-    expect(softPlan.trades.every(t => t.action === 'HOLD')).toBe(true)
+  it('soft proportional: all trades are BUY (fallback to target-proportional when drift = 0)', () => {
+    expect(softPlan.trades.every(t => t.action === 'BUY')).toBe(true)
   })
 
-  it('soft equal-weight: all trades are HOLD (no underweight to split among)', () => {
-    expect(equalPlan.trades.every(t => t.action === 'HOLD')).toBe(true)
+  it('soft proportional: VOO gets 40% of budget ($400)', () => {
+    const voo = softPlan.trades.find(t => t.ticker === 'VOO')!
+    expect(voo.suggestedAmount).toBeCloseTo(400, 2)
+    expect(voo.suggestedShares).toBeCloseTo(0.8, 4)
   })
 
-  it('soft: zero buy cost', () => {
-    expect(softPlan.totalBuyCost.usd).toBe(0)
-    expect(softPlan.totalBuyCost.twd).toBe(0)
+  it('soft proportional: GLDM gets 15% of budget ($150)', () => {
+    const gldm = softPlan.trades.find(t => t.ticker === 'GLDM')!
+    expect(gldm.suggestedAmount).toBeCloseTo(150, 2)
+    expect(gldm.suggestedShares).toBeCloseTo(3, 4)
   })
 
-  it('hard: no sells and no buys when all on target', () => {
+  it('soft equal-weight: all trades are BUY', () => {
+    expect(equalPlan.trades.every(t => t.action === 'BUY')).toBe(true)
+  })
+
+  it('soft equal-weight: each USD holding gets $200', () => {
+    const voo = equalPlan.trades.find(t => t.ticker === 'VOO')!
+    expect(voo.suggestedAmount).toBeCloseTo(200, 2)
+    expect(voo.suggestedShares).toBeCloseTo(0.4, 4)
+  })
+
+  it('hard: no sells and no buys when all on target with zero budget', () => {
+    // Hard with $0 budget: buyableBase = 0, no underweight → all HOLD (correct)
     const hardPlan = generateHardRebalancePlan(atTarget, 0, 'USD', FX, 'proportional-to-drift', NO_CASH)
     expect(hardPlan.trades.every(t => t.action === 'HOLD')).toBe(true)
     expect(hardPlan.totalSellProceeds.usd).toBe(0)
     expect(hardPlan.totalBuyCost.usd).toBe(0)
+  })
+})
+
+// ─── Test 9: All holdings overweight (no buys in soft strategy) ───────────────
+
+describe('generateSoftRebalancePlan – all holdings overweight', () => {
+  //  Edge case 6: all holdings have drift > 0 (e.g., target allocations were
+  //  reduced or cash is counted elsewhere).  Soft strategy never buys overweight
+  //  holdings — eligible set is empty → all HOLD, zero buy cost.
+
+  const TOTAL_OW = 1_000_000
+  const allOverweight: HoldingState[] = [
+    // cur% > tgt% for all
+    makeHolding('voo',  'VOO',  'USD', 500, 45, 40, TOTAL_OW),
+    makeHolding('vht',  'VHT',  'USD', 300, 25, 20, TOTAL_OW),
+    makeHolding('gldm', 'GLDM', 'USD',  50, 30, 15, TOTAL_OW),  // extreme overweight
+  ]
+
+  const plan = generateSoftRebalancePlan(allOverweight, 1000, 'USD', FX, 'proportional-to-drift', NO_CASH)
+
+  it('all trades are HOLD (no eligible underweight or at-target holdings)', () => {
+    expect(plan.trades.every(t => t.action === 'HOLD')).toBe(true)
+  })
+
+  it('zero buy cost (budget unused)', () => {
+    expect(plan.totalBuyCost.usd).toBe(0)
+    expect(plan.totalBuyCost.twd).toBe(0)
+  })
+
+  it('all HOLD reasons mention overweight', () => {
+    expect(plan.trades.every(t => t.reason.toLowerCase().includes('overweight'))).toBe(true)
+  })
+})
+
+// ─── Test 10: Holding with price = 0 ─────────────────────────────────────────
+
+describe('edge case: holding with price = 0', () => {
+  //  Edge case 4: one holding has no price yet. It must be HOLDed with a clear
+  //  reason. The remaining holdings receive normal allocation. A plan-level
+  //  warning must be present.
+
+  const TOTAL = 1_000_000
+  const withNullPrice: HoldingState[] = [
+    makeHolding('voo',  'VOO',  'USD', 500, 35, 50, TOTAL),  // underweight
+    { // no price yet
+      holdingId: 'new', ticker: 'NEW', sleeveId: 'sleeve-1', currency: 'USD',
+      currentShares: 0, currentPricePerShare: 0,
+      targetAllocationPct: 50, currentAllocationPct: 0,
+      drift: -50, marketValue: 0, marketValueBase: 0,
+    },
+  ]
+
+  const plan = generateSoftRebalancePlan(withNullPrice, 1000, 'USD', FX, 'proportional-to-drift', NO_CASH)
+
+  it('zero-price holding is HOLD', () => {
+    const newH = plan.trades.find(t => t.ticker === 'NEW')!
+    expect(newH.action).toBe('HOLD')
+    expect(newH.suggestedShares).toBe(0)
+  })
+
+  it('zero-price holding reason mentions price data', () => {
+    const newH = plan.trades.find(t => t.ticker === 'NEW')!
+    expect(newH.reason.toLowerCase()).toMatch(/price/)
+  })
+
+  it('non-zero-price holding still gets a BUY', () => {
+    const voo = plan.trades.find(t => t.ticker === 'VOO')!
+    expect(voo.action).toBe('BUY')
+    expect(voo.suggestedShares).toBeGreaterThan(0)
+    expect(isFinite(voo.suggestedShares)).toBe(true)
+    expect(isNaN(voo.suggestedShares)).toBe(false)
+  })
+
+  it('plan includes a warning about the no-price holding', () => {
+    expect(plan.warnings.length).toBeGreaterThan(0)
+    expect(plan.warnings.some(w => w.toLowerCase().includes('price'))).toBe(true)
+  })
+})
+
+// ─── Test 11: Dust threshold ──────────────────────────────────────────────────
+
+describe('edge case: budget too small — dust trades become HOLD', () => {
+  //  Edge case 5: very small budget → suggested shares < DUST_SHARES.
+  //  VOO at $500/share: to get < 0.0001 shares need < $0.05 budget.
+  //  Use $0.01 budget; both underweight holdings receive < DUST_SHARES → HOLD.
+
+  const TOTAL = 1_000_000
+  const twoUnderweight: HoldingState[] = [
+    makeHolding('voo', 'VOO', 'USD', 500, 35, 50, TOTAL),  // drift -15
+    makeHolding('smh', 'SMH', 'USD', 250, 15, 50, TOTAL),  // drift -35
+  ]
+
+  const plan = generateSoftRebalancePlan(twoUnderweight, 0.01, 'USD', FX, 'proportional-to-drift', NO_CASH)
+
+  it('all trades are HOLD (shares below dust threshold)', () => {
+    expect(plan.trades.every(t => t.action === 'HOLD')).toBe(true)
+  })
+
+  it('dust reason mentions amount too small', () => {
+    expect(plan.trades.some(t => t.reason.toLowerCase().includes('amount too small'))).toBe(true)
+  })
+
+  it('plan includes a dust warning', () => {
+    expect(plan.warnings.some(w => w.toLowerCase().includes('dust') || w.toLowerCase().includes('threshold'))).toBe(true)
+  })
+
+  it('DUST_SHARES constant is exported and equals 0.0001', () => {
+    expect(DUST_SHARES).toBe(0.0001)
   })
 })
 

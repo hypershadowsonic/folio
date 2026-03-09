@@ -99,6 +99,10 @@ export async function createTradeOperation(
     async () => {
       const snapshotBefore = await captureSnapshot(portfolioId)
 
+      // ── Load portfolio for FX fallback rate ────────────────────────────────
+      const portfolio = await db.portfolios.get(portfolioId)
+      const portfolioFxRate = portfolio?.fxRateOverride ?? portfolio?.initialFxRate
+
       // ── Load holdings for this operation ───────────────────────────────────
       const holdingIds = [...new Set(params.entries.map(e => e.holdingId))]
       const holdings = await db.holdings.bulkGet(holdingIds) as (Holding | undefined)[]
@@ -133,12 +137,15 @@ export async function createTradeOperation(
 
           if (holding.currency !== 'TWD') {
             const lots = await loadAvailableLots(portfolioId, holding.currency)
+            // portfolioFxRate is the fallback for any gap not covered by FX lots
+            // (e.g. USD sell proceeds that live in the cash balance but not in lots).
+            // Throws InsufficientFxLotsError only when portfolioFxRate is also undefined.
             const { consumed, blendedRate, baseCurrencyCost, updatedLots } =
-              consumeFxLots(lots, grossCost)  // throws InsufficientFxLotsError
+              consumeFxLots(lots, grossCost, portfolioFxRate)
 
             fxCostBasis = { fxLotsConsumed: consumed, blendedRate, baseCurrencyCost }
 
-            // Persist updated lot remainingAmounts
+            // Persist updated lot remainingAmounts (synthetic 'cash' lot is not in DB)
             for (const lot of updatedLots) {
               await db.fxLots.update(lot.id, { remainingAmount: lot.remainingAmount })
             }

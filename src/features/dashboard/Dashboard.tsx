@@ -143,6 +143,24 @@ function AllocationSection({
 }) {
   const [expandedId, setExpandedId] = useState<string | null>(null)
 
+  // ── Actual bar: normalize to 100% and add Cash segment for the gap ───────────
+  const sleevesTotalPct = allocs.reduce((s, a) => s + a.actualPct, 0)
+  // Cash = whatever portion of portfolio is not in any sleeve
+  const cashBarPct = Math.max(0, 100 - sleevesTotalPct)
+  // Normalize against the true sum (guards against floating-point > 100 edge case)
+  const barTotal = sleevesTotalPct + cashBarPct
+  const normActual = (pct: number) => barTotal > 0 ? (pct / barTotal) * 100 : 0
+
+  // Bottom-strip class for drift indicator — discrete states → Tailwind arbitrary classes
+  // (complete literal strings so Tailwind's JIT scanner includes them)
+  function driftStripClass(drift: number): string {
+    const abs = Math.abs(drift)
+    if (abs <= 0.1) return ''
+    if (abs <= 2)   return '[box-shadow:inset_0_-3px_0_#10b981]'  // emerald-500
+    if (abs <= 5)   return '[box-shadow:inset_0_-3px_0_#f59e0b]'  // amber-500
+    return                  '[box-shadow:inset_0_-3px_0_#ef4444]'  // red-500
+  }
+
   return (
     <div className="space-y-3">
       {/* Stacked bars */}
@@ -151,13 +169,23 @@ function AllocationSection({
           Actual
         </p>
         <div className="flex h-3 w-full overflow-hidden rounded-full bg-muted">
-          {allocs.map(({ sleeve, actualPct }) => (
+          {allocs.map(({ sleeve, actualPct, targetPct }) => {
+            const drift = actualPct - targetPct
+            return (
+              <div
+                key={sleeve.id}
+                style={{ '--w': `${normActual(actualPct)}%`, '--c': sleeve.color } as React.CSSProperties}
+                className={cn('h-full w-[var(--w)] bg-[var(--c)]', driftStripClass(drift))}
+              />
+            )
+          })}
+          {/* Cash segment fills the remainder so the bar always reaches full width */}
+          {cashBarPct > 0.01 && (
             <div
-              key={sleeve.id}
-              style={{ width: `${Math.max(actualPct, 0)}%`, backgroundColor: sleeve.color }}
-              className="h-full"
+              style={{ '--w': `${normActual(cashBarPct)}%` } as React.CSSProperties}
+              className="h-full w-[var(--w)] bg-slate-400/40"
             />
-          ))}
+          )}
         </div>
         <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
           Target
@@ -166,8 +194,8 @@ function AllocationSection({
           {allocs.map(({ sleeve, targetPct }) => (
             <div
               key={sleeve.id}
-              style={{ width: `${Math.max(targetPct, 0)}%`, backgroundColor: sleeve.color }}
-              className="h-full opacity-50"
+              style={{ '--w': `${Math.max(targetPct, 0)}%`, '--c': sleeve.color } as React.CSSProperties}
+              className="h-full w-[var(--w)] bg-[var(--c)] opacity-50"
             />
           ))}
         </div>
@@ -177,10 +205,19 @@ function AllocationSection({
       <div className="flex flex-wrap gap-x-3 gap-y-1">
         {allocs.map(({ sleeve }) => (
           <span key={sleeve.id} className="flex items-center gap-1 text-[10px] text-muted-foreground">
-            <span className="h-2 w-2 rounded-sm shrink-0" style={{ backgroundColor: sleeve.color }} />
+            <span
+              style={{ '--c': sleeve.color } as React.CSSProperties}
+              className="h-2 w-2 rounded-sm shrink-0 bg-[var(--c)]"
+            />
             {sleeve.name}
           </span>
         ))}
+        {cashBarPct > 0.01 && (
+          <span className="flex items-center gap-1 text-[10px] text-muted-foreground">
+            <span className="h-2 w-2 rounded-sm shrink-0 bg-slate-400/40" />
+            Cash
+          </span>
+        )}
       </div>
 
       {/* Per-sleeve rows */}
@@ -198,13 +235,14 @@ function AllocationSection({
           return (
             <div key={sleeve.id} className="rounded-lg border border-border bg-card overflow-hidden">
               <button
+                type="button"
                 className="flex w-full items-center justify-between px-3 py-2.5 text-left"
                 onClick={() => setExpandedId(isExpanded ? null : sleeve.id)}
               >
                 <div className="flex items-center gap-2 min-w-0">
                   <span
-                    className="h-2.5 w-2.5 shrink-0 rounded-sm"
-                    style={{ backgroundColor: sleeve.color }}
+                    style={{ '--c': sleeve.color } as React.CSSProperties}
+                    className="h-2.5 w-2.5 shrink-0 rounded-sm bg-[var(--c)]"
                   />
                   <span className="text-sm font-medium truncate">{sleeve.name}</span>
                 </div>
@@ -637,6 +675,7 @@ export default function Dashboard() {
           {RANGES.map(r => (
             <button
               key={r}
+              type="button"
               onClick={() => setRange(r)}
               className={cn(
                 'rounded px-2.5 py-1 text-xs font-medium transition-colors',
@@ -763,6 +802,7 @@ export default function Dashboard() {
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-semibold">Recent Operations</h2>
           <button
+            type="button"
             onClick={() => setActiveTab('operations')}
             className="flex items-center gap-1 text-xs text-primary hover:underline"
           >
