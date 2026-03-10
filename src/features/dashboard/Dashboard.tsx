@@ -143,60 +143,50 @@ function AllocationSection({
 }) {
   const [expandedId, setExpandedId] = useState<string | null>(null)
 
-  // ── Actual bar: normalize to 100% and add Cash segment for the gap ───────────
-  const sleevesTotalPct = allocs.reduce((s, a) => s + a.actualPct, 0)
-  // Cash = whatever portion of portfolio is not in any sleeve
-  const cashBarPct = Math.max(0, 100 - sleevesTotalPct)
-  // Normalize against the true sum (guards against floating-point > 100 edge case)
-  const barTotal = sleevesTotalPct + cashBarPct
-  const normActual = (pct: number) => barTotal > 0 ? (pct / barTotal) * 100 : 0
+  // ── Proportional flex values for Actual bar ───────────────────────────────────
+  // Re-base against holdings-only sum so segments always fill 100% of the bar.
+  // flex: N distributes width proportionally without needing explicit percentages.
+  const holdingsTotalPct = allocs.reduce((s, a) => s + a.actualPct, 0)
+  const actualFlex = (pct: number) => holdingsTotalPct > 0 ? pct / holdingsTotalPct : 0
 
-  // Bottom-strip class for drift indicator — discrete states → Tailwind arbitrary classes
-  // (complete literal strings so Tailwind's JIT scanner includes them)
-  function driftStripClass(drift: number): string {
-    const abs = Math.abs(drift)
-    if (abs <= 0.1) return ''
-    if (abs <= 2)   return '[box-shadow:inset_0_-3px_0_#10b981]'  // emerald-500
-    if (abs <= 5)   return '[box-shadow:inset_0_-3px_0_#f59e0b]'  // amber-500
-    return                  '[box-shadow:inset_0_-3px_0_#ef4444]'  // red-500
-  }
+  // Sanitise sleeve ID for use as a CSS identifier (UUIDs contain hyphens)
+  const sid = (id: string) => `s${id.replace(/-/g, '')}`
+
+  // Inline <style> carries the dynamic color + flex values so no element needs
+  // a style= prop (which the linter forbids).
+  const dynamicCss = allocs.map(({ sleeve, actualPct, targetPct }) => `
+    .abar-${sid(sleeve.id)}{flex:${actualFlex(actualPct)};background-color:${sleeve.color}}
+    .tbar-${sid(sleeve.id)}{flex:${Math.max(targetPct, 0)};background-color:${sleeve.color}}
+    .dot-${sid(sleeve.id)}{background-color:${sleeve.color}}
+  `).join('')
 
   return (
     <div className="space-y-3">
+      {/* Dynamic CSS — one rule per sleeve, avoids style= on each element */}
+      {/* eslint-disable-next-line react/no-danger */}
+      <style dangerouslySetInnerHTML={{ __html: dynamicCss }} />
+
       {/* Stacked bars */}
       <div className="space-y-1.5">
         <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
           Actual
         </p>
         <div className="flex h-3 w-full overflow-hidden rounded-full bg-muted">
-          {allocs.map(({ sleeve, actualPct, targetPct }) => {
-            const drift = actualPct - targetPct
-            return (
-              <div
-                key={sleeve.id}
-                style={{ '--w': `${normActual(actualPct)}%`, '--c': sleeve.color } as React.CSSProperties}
-                className={cn('h-full w-[var(--w)] bg-[var(--c)]', driftStripClass(drift))}
-              />
-            )
-          })}
-          {/* Cash segment fills the remainder so the bar always reaches full width */}
-          {cashBarPct > 0.01 && (
-            <div
-              style={{ '--w': `${normActual(cashBarPct)}%` } as React.CSSProperties}
-              className="h-full w-[var(--w)] bg-slate-400/40"
-            />
+          {holdingsTotalPct === 0 ? (
+            // No holdings with shares — full-width grey placeholder
+            <div className="h-full w-full bg-muted-foreground/20" />
+          ) : (
+            allocs.map(({ sleeve }) => (
+              <div key={sleeve.id} className={`h-full abar-${sid(sleeve.id)}`} />
+            ))
           )}
         </div>
         <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
           Target
         </p>
         <div className="flex h-3 w-full overflow-hidden rounded-full bg-muted">
-          {allocs.map(({ sleeve, targetPct }) => (
-            <div
-              key={sleeve.id}
-              style={{ '--w': `${Math.max(targetPct, 0)}%`, '--c': sleeve.color } as React.CSSProperties}
-              className="h-full w-[var(--w)] bg-[var(--c)] opacity-50"
-            />
+          {allocs.map(({ sleeve }) => (
+            <div key={sleeve.id} className={`h-full opacity-50 tbar-${sid(sleeve.id)}`} />
           ))}
         </div>
       </div>
@@ -205,19 +195,10 @@ function AllocationSection({
       <div className="flex flex-wrap gap-x-3 gap-y-1">
         {allocs.map(({ sleeve }) => (
           <span key={sleeve.id} className="flex items-center gap-1 text-[10px] text-muted-foreground">
-            <span
-              style={{ '--c': sleeve.color } as React.CSSProperties}
-              className="h-2 w-2 rounded-sm shrink-0 bg-[var(--c)]"
-            />
+            <span className={`h-2 w-2 rounded-sm shrink-0 dot-${sid(sleeve.id)}`} />
             {sleeve.name}
           </span>
         ))}
-        {cashBarPct > 0.01 && (
-          <span className="flex items-center gap-1 text-[10px] text-muted-foreground">
-            <span className="h-2 w-2 rounded-sm shrink-0 bg-slate-400/40" />
-            Cash
-          </span>
-        )}
       </div>
 
       {/* Per-sleeve rows */}
@@ -240,10 +221,7 @@ function AllocationSection({
                 onClick={() => setExpandedId(isExpanded ? null : sleeve.id)}
               >
                 <div className="flex items-center gap-2 min-w-0">
-                  <span
-                    style={{ '--c': sleeve.color } as React.CSSProperties}
-                    className="h-2.5 w-2.5 shrink-0 rounded-sm bg-[var(--c)]"
-                  />
+                  <span className={`h-2.5 w-2.5 shrink-0 rounded-sm dot-${sid(sleeve.id)}`} />
                   <span className="text-sm font-medium truncate">{sleeve.name}</span>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
