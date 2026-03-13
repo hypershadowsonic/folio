@@ -266,16 +266,18 @@ If user tries to plan DCA and USD cash < required amount:
 
 ### F5: Performance Analytics
 
-**Description**: Portfolio and sleeve-level performance attribution.
+**Description**: Portfolio and sleeve-level performance attribution with PnL decomposition.
 
 **Acceptance Criteria**:
-- Time-weighted return (TWR) for selected period
-- Money-weighted return (MWR/XIRR) accounting for cash flows
-- Per-sleeve performance breakdown
+- Dual-axis line chart: Portfolio Value (excl. cash, left axis), Unrealized PnL and Total PnL (right axis)
+- Key metrics cards: Portfolio Value (excl. cash), Unrealized PnL, Realized PnL (weighted-average cost basis), Total PnL, TWR, MWR
+- Month-over-month growth rate: current month number + trailing 12-month bar chart
+- Per-sleeve performance breakdown (sleeve attribution)
 - Benchmark comparison (configurable, default: VOO)
-- Simple line chart of portfolio value over time
+- Period summary (start/end value, deposits, withdrawals, net gain)
+- Realized PnL calculated using averageCostBasis (weighted average method)
 
-**UI Behavior**: Date range selector (1M, 3M, 6M, YTD, 1Y, ALL, custom). Tap sleeve to drill into holding-level detail.
+**UI Behavior**: Date range selector (1M, 3M, 6M, YTD, 1Y, ALL, custom). Currency toggle (TWD/USD). Tap sleeve to drill into holding-level detail. "Portfolio Value" on this tab always excludes cash balances.
 
 ---
 

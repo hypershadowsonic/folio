@@ -656,7 +656,7 @@ describe('calculateCurrentAllocations', () => {
     },
   ]
 
-  const states = calculateCurrentAllocations(rawHoldings, NO_CASH, FX)
+  const states = calculateCurrentAllocations(rawHoldings, FX)
 
   it('returns one state per holding', () => {
     expect(states).toHaveLength(5)

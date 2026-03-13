@@ -7,9 +7,10 @@
  *   3. Cash balance updates via cash engine
  *   4. Holding position tracking (currentShares, averageCostBasis, averageCostBasisBase)
  *   5. Atomic persistence of all changes in a single db.transaction
+ *   6. Persistence of snapshotBefore/After to db.snapshots for Performance tab queries
  *
  * All writes use db.transaction('rw', [...allTables], ...) for atomicity.
- * Tables in scope: portfolios, holdings, cashAccounts, fxTransactions, fxLots, operations
+ * Tables in scope: portfolios, holdings, cashAccounts, fxTransactions, fxLots, operations, snapshots
  */
 
 import { db } from '@/db'
@@ -43,6 +44,8 @@ export interface TradeOperationParams {
   entries: TradeEntryInput[]
   rationale: string
   tag?: string
+  /** User-selected date for back-dating. Defaults to now. Must not be in the future. */
+  timestamp?: Date
 }
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
@@ -95,9 +98,13 @@ export async function createTradeOperation(
       db.fxTransactions,
       db.fxLots,
       db.operations,
+      db.snapshots,
     ],
     async () => {
+      const opTimestamp = params.timestamp ?? new Date()
+
       const snapshotBefore = await captureSnapshot(portfolioId)
+      snapshotBefore.timestamp = new Date(opTimestamp.getTime() - 1)
 
       // ── Load portfolio for FX fallback rate ────────────────────────────────
       const portfolio = await db.portfolios.get(portfolioId)
@@ -138,14 +145,11 @@ export async function createTradeOperation(
           if (holding.currency !== 'TWD') {
             const lots = await loadAvailableLots(portfolioId, holding.currency)
             // portfolioFxRate is the fallback for any gap not covered by FX lots
-            // (e.g. USD sell proceeds that live in the cash balance but not in lots).
-            // Throws InsufficientFxLotsError only when portfolioFxRate is also undefined.
             const { consumed, blendedRate, baseCurrencyCost, updatedLots } =
               consumeFxLots(lots, grossCost, portfolioFxRate)
 
             fxCostBasis = { fxLotsConsumed: consumed, blendedRate, baseCurrencyCost }
 
-            // Persist updated lot remainingAmounts (synthetic 'cash' lot is not in DB)
             for (const lot of updatedLots) {
               await db.fxLots.update(lot.id, { remainingAmount: lot.remainingAmount })
             }
@@ -157,9 +161,6 @@ export async function createTradeOperation(
             amount: -grossCost,
           })
 
-          // ── Update holding position (delegates to holdingService) ─────────
-          // updateHoldingOnBuy joins the current Dexie transaction context
-          // automatically — no nested-transaction conflict.
           await updateHoldingOnBuy(
             input.holdingId,
             input.shares,
@@ -178,15 +179,12 @@ export async function createTradeOperation(
           })
         } else {
           // ── SELL ───────────────────────────────────────────────────────────
-          // updateHoldingOnSell validates shares and throws InsufficientSharesError
-          // if insufficient, aborting the whole transaction atomically.
           await updateHoldingOnSell(
             input.holdingId,
             input.shares,
             input.pricePerShare,
           )
 
-          // ── Cash credit (proceeds minus fees) ─────────────────────────────
           const proceeds = input.shares * input.pricePerShare - input.fees
           balances = applyCashEffect(balances, {
             currency: holding.currency,
@@ -213,12 +211,17 @@ export async function createTradeOperation(
       }
 
       const snapshotAfter = await captureSnapshot(portfolioId)
+      snapshotAfter.timestamp = opTimestamp
+
+      // ── Persist snapshots to db.snapshots for Performance tab ─────────────
+      await db.snapshots.add({ id: crypto.randomUUID(), portfolioId, ...snapshotBefore })
+      await db.snapshots.add({ id: crypto.randomUUID(), portfolioId, ...snapshotAfter })
 
       const operation: Operation = {
         id: crypto.randomUUID(),
         portfolioId,
         type: params.type,
-        timestamp: new Date(),
+        timestamp: opTimestamp,
         entries: operationEntries,
         rationale: params.rationale,
         tag: params.tag,
@@ -238,6 +241,7 @@ export interface DCAOperationParams {
   rationale: string
   strategy: 'soft' | 'hard'
   allocationMethod: 'proportional-to-drift' | 'equal-weight'
+  timestamp?: Date
 }
 
 /**
@@ -253,6 +257,7 @@ export async function createDCAOperation(
     entries: params.entries,
     rationale: params.rationale,
     tag: `dca:${params.strategy}:${params.allocationMethod}`,
+    timestamp: params.timestamp,
   })
 }
 
@@ -263,6 +268,7 @@ export interface TacticalRotationParams {
   buy: TradeEntryInput
   rationale: string
   tag?: string
+  timestamp?: Date
 }
 
 /**
@@ -273,7 +279,6 @@ export async function createTacticalRotation(
   portfolioId: string,
   params: TacticalRotationParams,
 ): Promise<Operation> {
-  // Explicitly order SELL before BUY so proceeds land in balances first
   const sellEntry: TradeEntryInput = { ...params.sell, side: 'SELL' }
   const buyEntry:  TradeEntryInput = { ...params.buy,  side: 'BUY' }
 
@@ -282,5 +287,6 @@ export async function createTacticalRotation(
     entries: [sellEntry, buyEntry],
     rationale: params.rationale,
     tag: params.tag,
+    timestamp: params.timestamp,
   })
 }

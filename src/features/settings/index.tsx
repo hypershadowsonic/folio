@@ -2,6 +2,8 @@ import { usePortfolioStore } from '@/stores/portfolioStore'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { PortfolioSettings } from './PortfolioSettings'
 import { CashFxManager } from './CashFxManager'
+import { AmmunitionPoolSettings } from './AmmunitionPoolSettings'
+import { BenchmarkSettings } from './BenchmarkSettings'
 
 export default function Settings() {
   const portfolio = usePortfolioStore((s) => s.portfolio)
@@ -18,6 +20,8 @@ export default function Settings() {
         <TabsList className="w-full mb-2">
           <TabsTrigger value="portfolio" className="flex-1">Portfolio</TabsTrigger>
           <TabsTrigger value="cash-fx"   className="flex-1">Cash &amp; FX</TabsTrigger>
+          <TabsTrigger value="ammo"      className="flex-1">Ammo Pool</TabsTrigger>
+          <TabsTrigger value="benchmark" className="flex-1">Benchmark</TabsTrigger>
         </TabsList>
 
         <TabsContent value="portfolio">
@@ -26,6 +30,14 @@ export default function Settings() {
 
         <TabsContent value="cash-fx">
           <CashFxManager portfolioId={portfolio.id} />
+        </TabsContent>
+
+        <TabsContent value="ammo">
+          <AmmunitionPoolSettings portfolioId={portfolio.id} />
+        </TabsContent>
+
+        <TabsContent value="benchmark">
+          <BenchmarkSettings portfolioId={portfolio.id} />
         </TabsContent>
       </Tabs>
     </div>

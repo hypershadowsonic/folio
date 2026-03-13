@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { Plus, Trash2, Check, Loader2, AlertTriangle } from 'lucide-react'
+import { useLiveQuery } from 'dexie-react-hooks'
 import { db } from '@/db/database'
+import { captureAndStoreSnapshot } from '@/services/autoSnapshot'
 import { usePortfolioStore } from '@/stores/portfolioStore'
 import { useDebouncedCallback } from '@/hooks/useDebounce'
 import { Button } from '@/components/ui/button'
@@ -92,6 +94,68 @@ function SaveIndicator({ status }: { status: SaveStatus }) {
 }
 
 // ─── Section wrapper ──────────────────────────────────────────────────────────
+
+// ─── DataSection ──────────────────────────────────────────────────────────────
+
+function DataSection({ portfolioId }: { portfolioId: string }) {
+  const [capturing, setCapturing] = useState(false)
+  const [justCaptured, setJustCaptured] = useState(false)
+
+  const latestSnapshot = useLiveQuery(
+    () => db.snapshots
+      .where('portfolioId').equals(portfolioId)
+      .sortBy('timestamp')
+      .then(snaps => snaps[snaps.length - 1] ?? null),
+    [portfolioId],
+  )
+
+  async function handleCapture() {
+    setCapturing(true)
+    try {
+      await captureAndStoreSnapshot(portfolioId)
+      setJustCaptured(true)
+      setTimeout(() => setJustCaptured(false), 2500)
+    } finally {
+      setCapturing(false)
+    }
+  }
+
+  const fmtTs = (ts: Date | string) =>
+    new Date(ts).toLocaleString(undefined, {
+      year: 'numeric', month: 'short', day: 'numeric',
+      hour: '2-digit', minute: '2-digit',
+    })
+
+  return (
+    <SettingsSection
+      title="Data"
+      description="Manual and automatic portfolio snapshots. A snapshot is captured automatically every 7 days when the app is opened."
+    >
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-sm font-medium">Last snapshot</p>
+          <p className="text-xs text-muted-foreground mt-0.5 truncate">
+            {latestSnapshot === undefined && 'Loading…'}
+            {latestSnapshot === null      && 'No snapshots yet'}
+            {latestSnapshot != null       && fmtTs(latestSnapshot.timestamp)}
+          </p>
+        </div>
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-8 text-xs shrink-0"
+          onClick={handleCapture}
+          disabled={capturing}
+        >
+          {capturing && <Loader2 className="h-3 w-3 animate-spin mr-1" />}
+          {justCaptured ? <><Check className="h-3 w-3 mr-1" />Captured</> : 'Capture Now'}
+        </Button>
+      </div>
+    </SettingsSection>
+  )
+}
+
+// ─── SettingsSection ──────────────────────────────────────────────────────────
 
 function SettingsSection({
   title, description, children,
@@ -265,12 +329,27 @@ export function PortfolioSettings({ portfolioId }: { portfolioId: string }) {
           name: s.name, color: s.color,
           targetAllocationPct: parseFloat(s.targetPct) || 0,
         }))
+        // Snapshot existing position-tracking fields before the delete so they
+        // survive the structure save. These fields are written exclusively by
+        // the operation logger and must never be reset by a settings edit.
+        const existingHoldings = await db.holdings
+          .where('portfolioId').equals(portfolioId)
+          .toArray()
+        const positionMap = new Map(existingHoldings.map(h => [h.id, {
+          currentShares:        h.currentShares,
+          currentPricePerShare: h.currentPricePerShare,
+          averageCostBasis:     h.averageCostBasis,
+          averageCostBasisBase: h.averageCostBasisBase,
+        }]))
+
         const dbHoldings: Holding[] = holdings.map((h) => ({
           id: h.id, portfolioId, sleeveId: h.sleeveId,
           ticker: h.ticker.toUpperCase(), name: h.name,
           targetAllocationPct: parseFloat(h.targetPct) || 0,
           driftThresholdPct: parseFloat(h.driftThresholdPct) || 2,
           currency: h.currency,
+          // Restore position tracking fields (undefined = never traded, preserved as-is)
+          ...positionMap.get(h.id),
         }))
         await db.transaction('rw', [db.sleeves, db.holdings], async () => {
           await db.sleeves.where('portfolioId').equals(portfolioId).delete()
@@ -705,6 +784,8 @@ export function PortfolioSettings({ portfolioId }: { portfolioId: string }) {
           </RadioGroup>
         </div>
       </SettingsSection>
+
+      <DataSection portfolioId={portfolioId} />
 
     </div>
   )

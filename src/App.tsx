@@ -6,6 +6,8 @@ import { BottomNav } from '@/components/BottomNav'
 import { Button } from '@/components/ui/button'
 import { SetupWizard } from '@/features/settings/SetupWizard'
 import { OperationLogger } from '@/features/operations/OperationLogger'
+import { checkAndCaptureWeeklySnapshot } from '@/services/autoSnapshot'
+import { useDriftSummary } from '@/features/dashboard/DriftMonitor'
 import type { TabId } from '@/stores/uiStore'
 import Dashboard from '@/features/dashboard'
 import DcaPlanner from '@/features/dca-planner'
@@ -32,6 +34,16 @@ export default function App() {
   // Load portfolio from Dexie once on mount
   useEffect(() => { void loadPortfolio() }, [loadPortfolio])
 
+  // Weekly auto-snapshot: runs silently each time the app is opened
+  const portfolioId = (portfolio as { id?: string } | null | undefined)?.id
+  useEffect(() => {
+    if (!portfolioId) return
+    void checkAndCaptureWeeklySnapshot(portfolioId)
+  }, [portfolioId])
+
+  const driftSummary = useDriftSummary(portfolioId)
+  const driftAlerts = driftSummary?.summary.overallHealth === 'action-needed'
+
   // null  → still loading from IndexedDB; show nothing to avoid flash
   if (portfolio === null) return null
 
@@ -45,7 +57,11 @@ export default function App() {
         {TAB_CONTENT[activeTab]}
       </main>
 
-      <BottomNav activeTab={activeTab} onTabChange={setActiveTab} />
+      <BottomNav
+        activeTab={activeTab}
+        onTabChange={setActiveTab}
+        alerts={{ dashboard: driftAlerts }}
+      />
 
       {/* ── Global "+" FAB — visible on all tabs when logger is closed ── */}
       {!loggerOpen && (

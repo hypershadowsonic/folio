@@ -23,10 +23,11 @@
 import { useState, useMemo, useCallback } from 'react'
 import {
   AlertTriangle, CheckCircle2, RefreshCw, TrendingUp,
-  Copy, Check, ArrowRight, Circle,
+  Copy, Check, ArrowRight, Circle, XCircle,
 } from 'lucide-react'
 import { usePortfolioStore } from '@/stores/portfolioStore'
 import { useUIStore } from '@/stores/uiStore'
+import { useDriftSummary } from '@/features/dashboard/DriftMonitor'
 import { useCashAccounts, useHoldings, useSleeves } from '@/db/hooks'
 import { useLiveQuery } from 'dexie-react-hooks'
 import Dexie from 'dexie'
@@ -61,10 +62,6 @@ function fmtCur(amount: number, currency: 'USD' | 'TWD'): string {
   }).format(amount)
 }
 
-function fmtShares(n: number): string {
-  if (n === 0) return '—'
-  return n.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 4 })
-}
 
 function currentMonthYear(): string {
   return new Date().toLocaleString('default', { month: 'long', year: 'numeric' })
@@ -111,6 +108,8 @@ function RadioCard({ selected, onSelect, label, subtitle }: RadioCardProps) {
 
 export interface RowExecution {
   actualPrice: string
+  actualShares: string
+  actualCost: string   // total cost excluding fees; used as basis for logging
   fees: string
 }
 
@@ -122,9 +121,9 @@ interface TradeTableRowProps {
 }
 
 function TradeTableRow({ trade, sleeveName, execution, onExecutionChange }: TradeTableRowProps) {
-  const { action, ticker, currency, suggestedShares, suggestedAmount,
+  const { action, ticker, currency, suggestedAmount,
           currentAllocationPct, targetAllocationPct, projectedAllocationPct } = trade
-  const filled = parseFloat(execution.actualPrice) > 0
+  const filled = parseFloat(execution.actualShares) > 0 && parseFloat(execution.actualCost) > 0
 
   const isHold = action === 'HOLD'
 
@@ -151,15 +150,6 @@ function TradeTableRow({ trade, sleeveName, execution, onExecutionChange }: Trad
         {action === 'HOLD' && <Badge variant="secondary"   className="text-[10px] py-0">HOLD</Badge>}
       </td>
 
-      {/* Suggested shares + alloc */}
-      <td className="py-2.5 px-2 align-middle text-right tabular-nums">
-        <span className="text-sm font-medium">{fmtShares(suggestedShares)}</span>
-        <div className="text-[10px] text-muted-foreground mt-0.5">
-          {currentAllocationPct.toFixed(1)}%→{projectedAllocationPct.toFixed(1)}%
-          <span className="opacity-60">/{targetAllocationPct.toFixed(1)}%</span>
-        </div>
-      </td>
-
       {/* Est. cost */}
       <td className="py-2.5 px-2 align-middle text-right tabular-nums text-sm text-muted-foreground">
         {suggestedAmount > 0 ? fmtCur(suggestedAmount, currency) : '—'}
@@ -182,6 +172,40 @@ function TradeTableRow({ trade, sleeveName, execution, onExecutionChange }: Trad
         )}
       </td>
 
+      {/* Actual shares input */}
+      <td className="py-2 px-2 align-middle">
+        {isHold ? (
+          <span className="text-xs text-muted-foreground">—</span>
+        ) : (
+          <Input
+            type="number"
+            min="0"
+            step="any"
+            placeholder="0"
+            className="h-7 w-20 text-right tabular-nums text-xs"
+            value={execution.actualShares}
+            onChange={e => onExecutionChange({ ...execution, actualShares: e.target.value })}
+          />
+        )}
+      </td>
+
+      {/* Actual cost input */}
+      <td className="py-2 px-2 align-middle">
+        {isHold ? (
+          <span className="text-xs text-muted-foreground">—</span>
+        ) : (
+          <Input
+            type="number"
+            min="0"
+            step="any"
+            placeholder="0.00"
+            className="h-7 w-24 text-right tabular-nums text-xs"
+            value={execution.actualCost}
+            onChange={e => onExecutionChange({ ...execution, actualCost: e.target.value })}
+          />
+        )}
+      </td>
+
       {/* Fees input */}
       <td className="py-2 px-2 align-middle">
         {isHold ? (
@@ -197,6 +221,14 @@ function TradeTableRow({ trade, sleeveName, execution, onExecutionChange }: Trad
             onChange={e => onExecutionChange({ ...execution, fees: e.target.value })}
           />
         )}
+      </td>
+
+      {/* Ratio Change */}
+      <td className="py-2.5 px-2 align-middle text-right tabular-nums">
+        <div className="text-[10px] text-muted-foreground">
+          {currentAllocationPct.toFixed(1)}%→{projectedAllocationPct.toFixed(1)}%
+          <span className="opacity-60">/{targetAllocationPct.toFixed(1)}%</span>
+        </div>
       </td>
 
       {/* Status */}
@@ -231,6 +263,7 @@ export default function DCAPlanner() {
   const cashAccounts       = useCashAccounts(portfolioId)
   const holdings           = useHoldings(portfolioId)
   const sleeves            = useSleeves(portfolioId)
+  const driftSummary       = useDriftSummary(portfolioId)
 
   // sleeveId → sleeve name
   const sleeveMap = useMemo(
@@ -293,8 +326,8 @@ export default function DCAPlanner() {
   const budget = parseFloat(budgetStr) || 0
 
   const holdingStates = useMemo(
-    () => calculateCurrentAllocations(holdings, cashBalances, fxRate),
-    [holdings, cashBalances, fxRate],
+    () => calculateCurrentAllocations(holdings, fxRate),
+    [holdings, fxRate],
   )
 
   // holdingId → sleeve name (via holdingState.sleeveId)
@@ -353,15 +386,17 @@ export default function DCAPlanner() {
 
   const filledCount = activeTrades.filter(t => {
     const exec = executions[t.holdingId]
-    return exec && parseFloat(exec.actualPrice) > 0
+    return exec && parseFloat(exec.actualShares) > 0 && parseFloat(exec.actualCost) > 0
   }).length
 
-  // Pre-fill execution inputs from currentPricePerShare on explicit generate
+  // Pre-fill execution inputs on explicit generate
   function handleGeneratePlan() {
     const prefilled: Record<string, RowExecution> = {}
     for (const state of holdingStates) {
       prefilled[state.holdingId] = {
         actualPrice: state.currentPricePerShare > 0 ? String(state.currentPricePerShare) : '',
+        actualShares: '',
+        actualCost: '',
         fees: '0',
       }
     }
@@ -380,6 +415,11 @@ export default function DCAPlanner() {
   // ── Log All ──────────────────────────────────────────────────────────────────
   const [rationale, setRationale]   = useState('')
   const [tag, setTag]               = useState('')
+  const [dcaDatetime, setDcaDatetime] = useState(() => {
+    const d = new Date()
+    const pad = (n: number) => String(n).padStart(2, '0')
+    return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+  })
   const [saving, setSaving]         = useState(false)
   const [saveError, setSaveError]   = useState<string | null>(null)
   const [saved, setSaved]           = useState(false)
@@ -395,14 +435,19 @@ export default function DCAPlanner() {
       setSaveError('Cash is insufficient. Check "Proceed anyway" to override.')
       return
     }
+    const timestamp = dcaDatetime ? new Date(dcaDatetime) : new Date()
+    if (isNaN(timestamp.getTime())) { setSaveError('Invalid date/time.'); return }
+    if (timestamp > new Date()) { setSaveError('Date cannot be in the future.'); return }
 
     const entries = activeTrades
       .map(t => {
-        const exec  = executions[t.holdingId]
-        const price = parseFloat(exec?.actualPrice ?? '') || 0
-        const fees  = parseFloat(exec?.fees ?? '') || 0
-        if (price <= 0) return null
-        return { holdingId: t.holdingId, side: t.action as 'BUY' | 'SELL', shares: t.suggestedShares, pricePerShare: price, fees }
+        const exec        = executions[t.holdingId]
+        const shares      = parseFloat(exec?.actualShares ?? '') || 0
+        const cost        = parseFloat(exec?.actualCost   ?? '') || 0
+        const fees        = parseFloat(exec?.fees ?? '') || 0
+        if (shares <= 0 || cost <= 0) return null
+        const pricePerShare = cost / shares
+        return { holdingId: t.holdingId, side: t.action as 'BUY' | 'SELL', shares, pricePerShare, fees }
       })
       .filter((e): e is NonNullable<typeof e> => e !== null)
 
@@ -420,6 +465,7 @@ export default function DCAPlanner() {
         entries,
         rationale: rationale.trim(),
         tag: tag.trim() || undefined,
+        timestamp,
       })
       setLoggedCount(entries.length)
       setSaved(true)
@@ -439,16 +485,17 @@ export default function DCAPlanner() {
   const [copied, setCopied] = useState(false)
 
   function handleCopy() {
-    const header = 'Action\tTicker\tCurrency\tSuggested Shares\tEst. Cost\tActual Price\tFees'
+    const header = 'Action\tTicker\tCurrency\tEst. Cost\tActual Price\tActual Shares\tActual Cost\tFees'
     const rows = activeTrades.map(t => {
       const exec = executions[t.holdingId]
       return [
         t.action,
         t.ticker,
         t.currency,
-        fmtShares(t.suggestedShares),
         t.suggestedAmount > 0 ? t.suggestedAmount.toFixed(2) : '',
         exec?.actualPrice ?? '',
+        exec?.actualShares ?? '',
+        exec?.actualCost ?? '',
         exec?.fees ?? '0',
       ].join('\t')
     })
@@ -476,6 +523,32 @@ export default function DCAPlanner() {
       </div>
 
       <div className="px-4 pt-4 space-y-4">
+
+        {/* ── Drift Banner ─────────────────────────────────────────────────── */}
+        {driftSummary && driftSummary.summary.overallHealth !== 'healthy' && (
+          <button
+            type="button"
+            onClick={() => setActiveTab('dashboard')}
+            className={cn(
+              'w-full flex items-center gap-2 rounded-lg px-3 py-2.5 text-left text-xs transition-colors',
+              driftSummary.summary.overallHealth === 'action-needed'
+                ? 'bg-red-50 dark:bg-red-950/40 text-red-700 dark:text-red-400 border border-red-200 dark:border-red-800'
+                : 'bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-400 border border-amber-200 dark:border-amber-800',
+            )}
+          >
+            {driftSummary.summary.overallHealth === 'action-needed'
+              ? <XCircle className="h-4 w-4 shrink-0" />
+              : <AlertTriangle className="h-4 w-4 shrink-0" />
+            }
+            <span className="flex-1 font-medium">
+              {driftSummary.summary.overallHealth === 'action-needed'
+                ? `${driftSummary.summary.criticalCount} holding${driftSummary.summary.criticalCount !== 1 ? 's' : ''} need rebalancing`
+                : `${driftSummary.summary.warningCount} holding${driftSummary.summary.warningCount !== 1 ? 's' : ''} approaching drift threshold`
+              }
+            </span>
+            <span className="shrink-0 opacity-70">View details →</span>
+          </button>
+        )}
 
         {/* ── 2 & 3. Strategy + Method (side by side on sm+) ──────────────── */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -580,8 +653,8 @@ export default function DCAPlanner() {
               <div className="flex items-start gap-2 rounded-lg border border-amber-500/40 bg-amber-500/5 px-3 py-2.5">
                 <AlertTriangle className="h-3.5 w-3.5 text-amber-500 shrink-0 mt-0.5" />
                 <p className="text-xs text-amber-700 dark:text-amber-400 leading-relaxed">
-                  {noPriceCount} holding{noPriceCount > 1 ? 's have' : ' has'} no price data and will be excluded from the plan.
-                  Update prices on the Dashboard first.
+                  {noPriceCount} holding{noPriceCount > 1 ? 's have' : ' has'} no price set — suggested amount will be shown.
+                  Enter actual price and shares when logging.
                 </p>
               </div>
             )}
@@ -764,10 +837,12 @@ export default function DCAPlanner() {
                         <th className="py-2 pl-3 pr-2 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Ticker</th>
                         <th className="py-2 px-2 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Sleeve</th>
                         <th className="py-2 px-2 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Action</th>
-                        <th className="py-2 px-2 text-right text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Suggested Shares</th>
                         <th className="py-2 px-2 text-right text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Est. Cost</th>
                         <th className="py-2 px-2 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Actual Price</th>
+                        <th className="py-2 px-2 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Actual Shares</th>
+                        <th className="py-2 px-2 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Actual Cost</th>
                         <th className="py-2 px-2 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Fees</th>
+                        <th className="py-2 px-2 text-right text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Ratio Change</th>
                         <th className="py-2 px-2 pr-3 text-center text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Status</th>
                       </tr>
                     </thead>
@@ -786,7 +861,7 @@ export default function DCAPlanner() {
                           key={t.holdingId}
                           trade={t}
                           sleeveName={holdingSleeveNameMap.get(t.holdingId) ?? ''}
-                          execution={{ actualPrice: '', fees: '' }}
+                          execution={{ actualPrice: '', actualShares: '', actualCost: '', fees: '' }}
                           onExecutionChange={() => {}}
                         />
                       ))}
@@ -802,6 +877,25 @@ export default function DCAPlanner() {
                 <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
                   Log Execution
                 </p>
+
+                <div className="space-y-1">
+                  <Label htmlFor="dca-datetime" className="text-xs text-muted-foreground">
+                    Execution Date &amp; Time
+                  </Label>
+                  <input
+                    id="dca-datetime"
+                    type="datetime-local"
+                    title="DCA execution date and time"
+                    max={(() => {
+                      const d = new Date()
+                      const pad = (n: number) => String(n).padStart(2, '0')
+                      return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+                    })()}
+                    value={dcaDatetime}
+                    onChange={e => { setDcaDatetime(e.target.value); setSaveError(null) }}
+                    className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  />
+                </div>
 
                 <div className="space-y-1">
                   <Label className="text-xs text-muted-foreground">
@@ -841,7 +935,7 @@ export default function DCAPlanner() {
                   {saving
                     ? 'Logging…'
                     : filledCount === 0
-                      ? 'Fill in actual prices to log'
+                      ? 'Fill in price and shares to log'
                       : !cashOk
                         ? 'Check "Proceed anyway" to log'
                         : rationale.trim().length < 10

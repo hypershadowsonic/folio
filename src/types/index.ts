@@ -1,5 +1,13 @@
 // ─── Portfolio ────────────────────────────────────────────────────────────────
 
+export interface BenchmarkConfig {
+  ticker: string
+  startPrice: number
+  currentPrice: number
+  currency: 'USD' | 'TWD'
+  updatedAt: Date
+}
+
 export interface Portfolio {
   id: string
   name: string
@@ -21,6 +29,12 @@ export interface Portfolio {
    * allowing ad-hoc rate corrections between actual FX transactions.
    */
   fxRateOverride?: number
+  /**
+   * Optional benchmark for performance comparison.
+   * ticker must match a holding ticker for "Update from Holdings" auto-fill.
+   * startPrice and currentPrice are manually entered (no live API in MVP).
+   */
+  benchmarkConfig?: BenchmarkConfig
   createdAt: Date
   updatedAt: Date
 }
@@ -157,8 +171,8 @@ export interface HoldingSnapshot {
 
 export interface AmmunitionPool {
   portfolioId: string
-  tier1: { holdingId: string; value: number; deployTriggerPct: number }
-  tier2: { holdingId: string; value: number; deployTriggerPct: number }
+  tier1: { holdingId: string | null; value: number; deployTriggerPct: number }
+  tier2: { holdingId: string | null; value: number; deployTriggerPct: number }
 }
 
 // ─── DCA Planner (derived types, used by Phase 4 engine) ─────────────────────

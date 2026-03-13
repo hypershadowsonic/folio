@@ -28,7 +28,7 @@ import type { HoldingSnapshot, PortfolioSnapshot } from '@/types'
  *
  * Returns 1 if nothing is found (avoids division by zero; caller should warn).
  */
-async function resolveCurrentFxRate(portfolioId: string): Promise<number> {
+export async function resolveCurrentFxRate(portfolioId: string): Promise<number> {
   // Tier 0: explicit user override — always wins
   const portfolio = await db.portfolios.get(portfolioId)
   if (portfolio?.fxRateOverride && portfolio.fxRateOverride > 0) {
@@ -172,8 +172,9 @@ export async function captureSnapshot(portfolioId: string): Promise<PortfolioSna
 
   const holdingSnapshots: HoldingSnapshot[] = holdingValues.map(
     ({ holding, accum, marketValue, marketValueBase }) => {
-      const allocationPct  = totalValueBase > 0
-        ? (marketValueBase / totalValueBase) * 100
+      // Allocation % = share of invested capital only (cash excluded from denominator)
+      const allocationPct  = holdingsValueBase > 0
+        ? (marketValueBase / holdingsValueBase) * 100
         : 0
       const driftFromTarget = allocationPct - holding.targetAllocationPct
 
@@ -191,11 +192,19 @@ export async function captureSnapshot(portfolioId: string): Promise<PortfolioSna
     }
   )
 
-  return {
+  const snap: PortfolioSnapshot = {
     timestamp:     new Date(),
     totalValueBase,
     currentFxRate: fxRate,
     cashBalances:  cashAccounts.map(a => ({ currency: a.currency, balance: a.balance })),
     holdings:      holdingSnapshots,
   }
+
+  console.log('[captureSnapshot] captured:', {
+    timestamp: snap.timestamp.toISOString(),
+    totalValueBase: snap.totalValueBase.toFixed(2),
+    holdings: snap.holdings.length,
+  })
+
+  return snap
 }

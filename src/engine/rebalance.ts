@@ -175,7 +175,6 @@ function computeWeights(
  */
 export function calculateCurrentAllocations(
   holdings: Holding[],
-  cashBalances: { twd: number; usd: number },
   fxRate: number,
 ): HoldingState[] {
   const withMv = holdings.map(h => {
@@ -186,8 +185,9 @@ export function calculateCurrentAllocations(
     return { h, shares, price, marketValue, marketValueBase }
   })
 
-  const cashBase  = cashBalances.twd + cashBalances.usd * fxRate
-  const totalBase = withMv.reduce((s, v) => s + v.marketValueBase, 0) + cashBase
+  // Denominator = invested capital only (holdings market value sum, no cash).
+  // Allocation % answers "how is invested capital distributed?", not total wealth.
+  const totalBase = withMv.reduce((s, v) => s + v.marketValueBase, 0)
 
   return withMv
     .map(({ h, shares, price, marketValue, marketValueBase }) => {
@@ -231,20 +231,16 @@ export function generateSoftRebalancePlan(
 ): RebalancePlanResult {
   const budgetBase = toBase(budget, budgetCurrency, fxRate)
 
-  // Total portfolio value after the budget injection
+  // Projected invested base after deploying the budget (cash excluded from denominator)
   const currentBase = holdings.reduce((s, h) => s + h.marketValueBase, 0)
-    + cashBalances.twd + cashBalances.usd * fxRate
   const projectedPortfolioBase = currentBase + budgetBase
 
-  // Holdings with a known price are eligible for trading
-  const priceable  = holdings.filter(h => h.currentPricePerShare > 0)
-  const underweight = priceable.filter(h => h.drift < 0)
-
-  // When no holdings are underweight, invest into at-target (drift ≤ 0) holdings.
+  // All underweight holdings (including those without a price) are eligible for budget.
   // Overweight (drift > 0) holdings are NEVER bought in soft strategy.
+  const underweight = holdings.filter(h => h.drift < 0)
   const eligible = underweight.length > 0
     ? underweight
-    : priceable.filter(h => h.drift <= 0)
+    : holdings.filter(h => h.drift <= 0)
 
   // Allocate budget (in TWD base) across eligible holdings
   const allocatedBase = new Map<string, number>()
@@ -260,34 +256,52 @@ export function generateSoftRebalancePlan(
   const buyCost = { usd: 0, twd: 0 }
   const warnings: string[] = []
 
-  const noPriceCount = holdings.length - priceable.length
-  if (noPriceCount > 0) {
-    warnings.push(
-      `${noPriceCount} holding${noPriceCount > 1 ? 's' : ''} skipped — no price data. Update prices on Dashboard first.`,
-    )
-  }
-
+  let noPriceBuyCount = 0
   let dustCount = 0
 
   const trades: TradePlan[] = holdings.map(h => {
-    // Cannot trade a holding without a price
+    const allocBase = allocatedBase.get(h.holdingId) ?? 0
+
+    // Holdings without a price: show BUY with amount if eligible, HOLD otherwise
     if (h.currentPricePerShare <= 0) {
+      if (allocBase <= 0) {
+        return {
+          holdingId:              h.holdingId,
+          ticker:                 h.ticker,
+          currency:               h.currency,
+          action:                 'HOLD',
+          suggestedShares:        0,
+          suggestedAmount:        0,
+          suggestedAmountBase:    0,
+          currentAllocationPct:   h.currentAllocationPct,
+          targetAllocationPct:    h.targetAllocationPct,
+          projectedAllocationPct: h.currentAllocationPct,
+          reason: h.drift > 0
+            ? `Overweight by ${h.drift.toFixed(1)}% — no action (soft strategy)`
+            : 'At target',
+        } satisfies TradePlan
+      }
+      // Eligible no-price holding: give a suggested amount, user enters actual price + shares
+      noPriceBuyCount++
+      const allocAmount = fromBase(allocBase, h.currency, fxRate)
+      if (h.currency === 'USD') buyCost.usd += allocAmount
+      else                      buyCost.twd += allocAmount
       return {
         holdingId:              h.holdingId,
         ticker:                 h.ticker,
         currency:               h.currency,
-        action:                 'HOLD',
+        action:                 'BUY',
         suggestedShares:        0,
-        suggestedAmount:        0,
-        suggestedAmountBase:    0,
+        suggestedAmount:        allocAmount,
+        suggestedAmountBase:    allocBase,
         currentAllocationPct:   h.currentAllocationPct,
         targetAllocationPct:    h.targetAllocationPct,
-        projectedAllocationPct: 0,
-        reason: 'No price data — update on Dashboard',
+        projectedAllocationPct: h.currentAllocationPct,  // unknown without price
+        reason: h.drift < 0
+          ? `Underweight by ${Math.abs(h.drift).toFixed(1)}% — enter actual price and shares`
+          : 'At target — enter actual price and shares',
       } satisfies TradePlan
     }
-
-    const allocBase = allocatedBase.get(h.holdingId) ?? 0
 
     if (allocBase <= 0) {
       return {
@@ -349,6 +363,12 @@ export function generateSoftRebalancePlan(
     } satisfies TradePlan
   })
 
+  if (noPriceBuyCount > 0) {
+    warnings.push(
+      `${noPriceBuyCount} holding${noPriceBuyCount > 1 ? 's have' : ' has'} no price set — suggested amount shown. Enter actual price and shares when logging.`,
+    )
+  }
+
   if (dustCount > 0) {
     warnings.push(
       `${dustCount} trade${dustCount > 1 ? 's' : ''} below dust threshold (< ${DUST_SHARES} shares) — budget may be too small`,
@@ -393,8 +413,8 @@ export function generateHardRebalancePlan(
   allocationMethod: 'proportional-to-drift' | 'equal-weight',
   cashBalances: { twd: number; usd: number },
 ): RebalancePlanResult {
+  // Holdings-only base (cash excluded) — allocation % is about invested capital
   const currentPortfolioBase = holdings.reduce((s, h) => s + h.marketValueBase, 0)
-    + cashBalances.twd + cashBalances.usd * fxRate
 
   // ── Step 1: Sell plans for overweight holdings ─────────────────────────────
 
@@ -432,12 +452,12 @@ export function generateHardRebalancePlan(
 
   // ── Step 3: Buy plans for underweight holdings ─────────────────────────────
 
-  const priceable      = holdings.filter(h => h.currentPricePerShare > 0)
-  const underweightP   = priceable.filter(h => h.drift < 0 && !sellTrades.has(h.holdingId))
+  // All underweight holdings (including no-price) are eligible for budget allocation.
+  const underweightAll = holdings.filter(h => h.drift < 0 && !sellTrades.has(h.holdingId))
   // Same fallback as soft: when no underweight, invest into at-target holdings
-  const eligibleP = underweightP.length > 0
-    ? underweightP
-    : priceable.filter(h => h.drift <= 0 && !sellTrades.has(h.holdingId))
+  const eligibleP = underweightAll.length > 0
+    ? underweightAll
+    : holdings.filter(h => h.drift <= 0 && !sellTrades.has(h.holdingId))
 
   // Buyable resources = sell proceeds (base) + injected budget (base)
   const budgetBase  = toBase(budget, budgetCurrency, fxRate)
@@ -458,33 +478,10 @@ export function generateHardRebalancePlan(
   const buyCost = { usd: 0, twd: 0 }
   const warnings: string[] = []
 
-  const noPriceCount = holdings.length - priceable.length
-  if (noPriceCount > 0) {
-    warnings.push(
-      `${noPriceCount} holding${noPriceCount > 1 ? 's' : ''} skipped — no price data. Update prices on Dashboard first.`,
-    )
-  }
-
+  let noPriceBuyCount = 0
   let dustCount = 0
 
   const trades: TradePlan[] = holdings.map(h => {
-    // Cannot trade a holding without a price
-    if (h.currentPricePerShare <= 0) {
-      return {
-        holdingId:              h.holdingId,
-        ticker:                 h.ticker,
-        currency:               h.currency,
-        action:                 'HOLD',
-        suggestedShares:        0,
-        suggestedAmount:        0,
-        suggestedAmountBase:    0,
-        currentAllocationPct:   h.currentAllocationPct,
-        targetAllocationPct:    h.targetAllocationPct,
-        projectedAllocationPct: 0,
-        reason: 'No price data — update on Dashboard',
-      } satisfies TradePlan
-    }
-
     const sell      = sellTrades.get(h.holdingId)
     const allocBase = allocatedBase.get(h.holdingId) ?? 0
 
@@ -507,9 +504,32 @@ export function generateHardRebalancePlan(
     }
 
     if (allocBase > 0) {
-      // Underweight (or at-target fallback) → BUY
       const allocAmount = fromBase(allocBase, h.currency, fxRate)
-      const shares      = allocAmount / h.currentPricePerShare
+
+      // No-price holding: show suggested amount, user fills actual price + shares
+      if (h.currentPricePerShare <= 0) {
+        noPriceBuyCount++
+        if (h.currency === 'USD') buyCost.usd += allocAmount
+        else                      buyCost.twd += allocAmount
+        return {
+          holdingId:              h.holdingId,
+          ticker:                 h.ticker,
+          currency:               h.currency,
+          action:                 'BUY',
+          suggestedShares:        0,
+          suggestedAmount:        allocAmount,
+          suggestedAmountBase:    allocBase,
+          currentAllocationPct:   h.currentAllocationPct,
+          targetAllocationPct:    h.targetAllocationPct,
+          projectedAllocationPct: h.currentAllocationPct,
+          reason: h.drift < 0
+            ? `Underweight by ${Math.abs(h.drift).toFixed(1)}% — enter actual price and shares`
+            : 'At target — enter actual price and shares',
+        } satisfies TradePlan
+      }
+
+      // Underweight (or at-target fallback) → BUY
+      const shares = allocAmount / h.currentPricePerShare
 
       // Dust guard
       if (shares < DUST_SHARES) {
@@ -565,6 +585,12 @@ export function generateHardRebalancePlan(
       reason: h.drift > 0 ? `Overweight by ${h.drift.toFixed(1)}% — trim to target` : 'At target',
     } satisfies TradePlan
   })
+
+  if (noPriceBuyCount > 0) {
+    warnings.push(
+      `${noPriceBuyCount} holding${noPriceBuyCount > 1 ? 's have' : ' has'} no price set — suggested amount shown. Enter actual price and shares when logging.`,
+    )
+  }
 
   if (dustCount > 0) {
     warnings.push(

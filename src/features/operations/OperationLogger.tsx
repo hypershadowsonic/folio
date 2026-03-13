@@ -9,7 +9,7 @@
  * built-in close button that the shadcn DialogContent wrapper includes.
  */
 
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import * as DialogPrimitive from '@radix-ui/react-dialog'
 import {
@@ -75,6 +75,12 @@ interface OperationLoggerProps {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+
+/** Format a Date as a datetime-local input value (YYYY-MM-DDThh:mm). */
+function toDatetimeLocal(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
 
 function groupBySleeve(holdings: Holding[], sleeves: Sleeve[]) {
   const sleeveMap = new Map(sleeves.map(s => [s.id, s]))
@@ -176,6 +182,14 @@ export function OperationLogger({ open, onOpenChange, portfolioId }: OperationLo
   const [fxFees, setFxFees]               = useState('0')
   const [fxNote, setFxNote]               = useState('')
 
+  // ── Operation datetime (user-selectable, defaults to now) ───────────────────
+  const [opDatetime, setOpDatetime]       = useState(() => toDatetimeLocal(new Date()))
+
+  // Reset datetime to "now" each time the dialog opens
+  useEffect(() => {
+    if (open) setOpDatetime(toDatetimeLocal(new Date()))
+  }, [open])
+
   // ── Status ───────────────────────────────────────────────────────────────────
   const [saving, setSaving]               = useState(false)
   const [error, setError]                 = useState<string | null>(null)
@@ -220,6 +234,7 @@ export function OperationLogger({ open, onOpenChange, portfolioId }: OperationLo
   // ── Reset all state ──────────────────────────────────────────────────────────
   function resetAll() {
     setSelectedType(null)
+    setOpDatetime(toDatetimeLocal(new Date()))
     setHoldingId(''); setShares(''); setPrice(''); setFees('0')
     setRationale(''); setTag('')
     setSellHoldingId(''); setSellShares(''); setSellPrice(''); setSellFees('0')
@@ -251,12 +266,22 @@ export function OperationLogger({ open, onOpenChange, portfolioId }: OperationLo
     }
   }
 
+  // ── Timestamp validation ────────────────────────────────────────────────────
+  function getTimestamp(): Date | null {
+    if (!opDatetime) return new Date()
+    const d = new Date(opDatetime)
+    if (isNaN(d.getTime())) { setError('Invalid date/time.'); return null }
+    if (d > new Date()) { setError('Date cannot be in the future.'); return null }
+    return d
+  }
+
   // ── Submit: trade ────────────────────────────────────────────────────────────
   async function submitTrade() {
     if (!selectedType || !holdingId)       { setError('Select a holding.'); return }
     if (!parsedShares || parsedShares <= 0) { setError('Enter a valid share count.'); return }
     if (!parsedPrice  || parsedPrice  <= 0) { setError('Enter a valid price per share.'); return }
     if (rationale.trim().length < 10)       { setError('Rationale must be at least 10 characters.'); return }
+    const timestamp = getTimestamp(); if (!timestamp) return
     setSaving(true); setError(null)
     try {
       await createTradeOperation(portfolioId, {
@@ -270,6 +295,7 @@ export function OperationLogger({ open, onOpenChange, portfolioId }: OperationLo
         }],
         rationale: rationale.trim(),
         tag: tag.trim() || undefined,
+        timestamp,
       })
       onSuccess('Operation logged.')
     } catch (err) { onError(err) }
@@ -285,6 +311,7 @@ export function OperationLogger({ open, onOpenChange, portfolioId }: OperationLo
     if (!pSellShares || !pSellPrice)         { setError('Fill in the sell side.'); return }
     if (!pBuyShares  || !pBuyPrice)          { setError('Fill in the buy side.'); return }
     if (rotRationale.trim().length < 10)     { setError('Rationale must be at least 10 characters.'); return }
+    const timestamp = getTimestamp(); if (!timestamp) return
     setSaving(true); setError(null)
     try {
       await createTacticalRotation(portfolioId, {
@@ -292,6 +319,7 @@ export function OperationLogger({ open, onOpenChange, portfolioId }: OperationLo
         buy:  { holdingId: buyHoldingId,  side: 'BUY',  shares: pBuyShares,  pricePerShare: pBuyPrice,  fees: parseFloat(buyFees)||0  },
         rationale: rotRationale.trim(),
         tag: rotTag.trim() || undefined,
+        timestamp,
       })
       onSuccess('Rotation logged.')
     } catch (err) { onError(err) }
@@ -301,13 +329,14 @@ export function OperationLogger({ open, onOpenChange, portfolioId }: OperationLo
   async function submitCash() {
     const parsed = parseFloat(cashAmount)
     if (!parsed || parsed <= 0) { setError('Enter a valid positive amount.'); return }
+    const timestamp = getTimestamp(); if (!timestamp) return
     setSaving(true); setError(null)
     try {
       if (selectedType === 'CASH_DEPOSIT') {
-        await recordCashDeposit(portfolioId, cashCurrency, parsed, cashNote || undefined)
+        await recordCashDeposit(portfolioId, cashCurrency, parsed, cashNote || undefined, timestamp)
         onSuccess('Deposit logged.')
       } else {
-        await recordCashWithdrawal(portfolioId, cashCurrency, parsed, cashNote || undefined)
+        await recordCashWithdrawal(portfolioId, cashCurrency, parsed, cashNote || undefined, timestamp)
         onSuccess('Withdrawal logged.')
       }
     } catch (err) { onError(err) }
@@ -321,6 +350,7 @@ export function OperationLogger({ open, onOpenChange, portfolioId }: OperationLo
     if (!parsedFrom || parsedFrom <= 0) { setError('Enter the TWD amount.'); return }
     if (!parsedTo   || parsedTo   <= 0) { setError('Enter the USD amount.'); return }
     if (!parsedRate || parsedRate <= 0) { setError('Enter the exchange rate.'); return }
+    const timestamp = getTimestamp(); if (!timestamp) return
     setSaving(true); setError(null)
     try {
       await recordFxExchange(portfolioId, {
@@ -328,7 +358,7 @@ export function OperationLogger({ open, onOpenChange, portfolioId }: OperationLo
         toCurrency: 'USD',   toAmount: parsedTo,
         rate: parsedRate, fees: parseFloat(fxFees)||0, feesCurrency: 'TWD',
         note: fxNote || undefined,
-      })
+      }, timestamp)
       onSuccess(`FX lot created: USD ${parsedTo.toFixed(2)} @ ${parsedRate}`)
     } catch (err) { onError(err) }
   }
@@ -421,6 +451,23 @@ export function OperationLogger({ open, onOpenChange, portfolioId }: OperationLo
                     </div>
                   </button>
                 ))}
+              </div>
+            )}
+
+            {/* ── Operation date/time (shown for all form types) ──────────── */}
+            {selectedType && !successMsg && (
+              <div className="px-4 pt-4 pb-0 space-y-1.5">
+                <Label htmlFor="op-datetime">Operation Date &amp; Time</Label>
+                <input
+                  id="op-datetime"
+                  type="datetime-local"
+                  title="Operation date and time"
+                  max={toDatetimeLocal(new Date())}
+                  value={opDatetime}
+                  onChange={e => { setOpDatetime(e.target.value); setError(null) }}
+                  className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                />
+                <p className="text-xs text-muted-foreground">Back-date to the actual execution date. Cannot be in the future.</p>
               </div>
             )}
 

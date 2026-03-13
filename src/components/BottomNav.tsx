@@ -15,9 +15,10 @@ const TABS: { id: TabId; label: string; Icon: React.FC<{ className?: string }> }
 interface BottomNavProps {
   activeTab: TabId
   onTabChange: (tab: TabId) => void
+  alerts?: Partial<Record<TabId, boolean>>
 }
 
-export function BottomNav({ activeTab, onTabChange }: BottomNavProps) {
+export function BottomNav({ activeTab, onTabChange, alerts }: BottomNavProps) {
   return (
     <nav className="fixed bottom-0 left-0 right-0 z-50 border-t border-border bg-background pb-safe">
       <div className="flex h-16 items-stretch">
@@ -35,7 +36,12 @@ export function BottomNav({ activeTab, onTabChange }: BottomNavProps) {
               )}
               aria-current={active ? 'page' : undefined}
             >
-              <Icon className={cn('h-5 w-5', active && 'text-primary')} />
+              <div className="relative">
+                <Icon className={cn('h-5 w-5', active && 'text-primary')} />
+                {alerts?.[id] && (
+                  <span className="absolute -top-0.5 -right-0.5 h-2 w-2 rounded-full bg-red-500 ring-1 ring-background" />
+                )}
+              </div>
               <span>{label}</span>
             </button>
           )

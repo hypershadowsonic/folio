@@ -3,11 +3,14 @@
  *
  * All write operations use db.transaction() for atomicity.
  * No React dependencies — safe to call from event handlers or other services.
+ *
+ * Snapshots are persisted to db.snapshots (before + after each operation) so
+ * the Performance tab chart and TWR calculations have data points at every cash event.
  */
 
 import { db } from '@/db'
+import { captureSnapshot } from '@/db/snapshotService'
 import type {
-  CashAccount,
   FxLot,
   FxTransaction,
   Operation,
@@ -21,6 +24,7 @@ import {
   getFxLotQueue as engineGetFxLotQueue,
   getLatestFxRate as engineGetLatestFxRate,
 } from '@/engine/fifo'
+import type { CashAccount } from '@/types'
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
 
@@ -49,38 +53,6 @@ async function loadLotsForPortfolio(
   return currency ? lots.filter(l => l.currency === currency) : lots
 }
 
-/**
- * Builds a lightweight PortfolioSnapshot from current DB state.
- * Holdings are left empty — full holding valuation is added in Phase 3.
- *
- * Must be called inside a transaction that includes cashAccounts,
- * fxTransactions, and fxLots.
- */
-async function buildSnapshot(
-  portfolioId: string,
-  overrideFxRate?: number,
-): Promise<PortfolioSnapshot> {
-  const accounts = await db.cashAccounts
-    .where('portfolioId')
-    .equals(portfolioId)
-    .toArray()
-
-  const lots = await loadLotsForPortfolio(portfolioId)
-  const fxRate = overrideFxRate ?? engineGetLatestFxRate(lots) ?? 0
-
-  const twdBalance = accounts.find(a => a.currency === 'TWD')?.balance ?? 0
-  const usdBalance = accounts.find(a => a.currency === 'USD')?.balance ?? 0
-  const totalValueBase = twdBalance + usdBalance * (fxRate || 1)
-
-  return {
-    timestamp: new Date(),
-    totalValueBase,
-    currentFxRate: fxRate,
-    cashBalances: accounts.map(a => ({ currency: a.currency, balance: a.balance })),
-    holdings: [],
-  }
-}
-
 /** Resolves the CashAccount for a given portfolio+currency. Throws if missing. */
 async function requireAccount(
   portfolioId: string,
@@ -96,6 +68,16 @@ async function requireAccount(
   return account
 }
 
+/** Persist a snapshot pair (before + after) to db.snapshots. */
+async function persistSnapshots(
+  portfolioId: string,
+  before: PortfolioSnapshot,
+  after: PortfolioSnapshot,
+): Promise<void> {
+  await db.snapshots.add({ id: crypto.randomUUID(), portfolioId, ...before })
+  await db.snapshots.add({ id: crypto.randomUUID(), portfolioId, ...after })
+}
+
 // ─── 1. recordCashDeposit ─────────────────────────────────────────────────────
 
 export async function recordCashDeposit(
@@ -103,25 +85,32 @@ export async function recordCashDeposit(
   currency: 'USD' | 'TWD',
   amount: number,
   note?: string,
+  timestamp?: Date,
 ): Promise<Operation> {
   return db.transaction(
     'rw',
-    [db.cashAccounts, db.fxTransactions, db.fxLots, db.operations],
+    [db.portfolios, db.holdings, db.cashAccounts, db.fxTransactions, db.fxLots, db.operations, db.snapshots],
     async () => {
-      const snapshotBefore = await buildSnapshot(portfolioId)
+      const opTimestamp = timestamp ?? new Date()
+
+      const snapshotBefore = await captureSnapshot(portfolioId)
+      snapshotBefore.timestamp = new Date(opTimestamp.getTime() - 1)
 
       const account = await requireAccount(portfolioId, currency)
       await db.cashAccounts.update(account.id, {
         balance: account.balance + amount,
       })
 
-      const snapshotAfter = await buildSnapshot(portfolioId)
+      const snapshotAfter = await captureSnapshot(portfolioId)
+      snapshotAfter.timestamp = opTimestamp
+
+      await persistSnapshots(portfolioId, snapshotBefore, snapshotAfter)
 
       const operation: Operation = {
         id: crypto.randomUUID(),
         portfolioId,
         type: 'CASH_DEPOSIT',
-        timestamp: new Date(),
+        timestamp: opTimestamp,
         entries: [],
         cashFlow: { currency, amount, note },
         rationale: note ?? `Deposit ${amount} ${currency}`,
@@ -141,12 +130,16 @@ export async function recordCashWithdrawal(
   currency: 'USD' | 'TWD',
   amount: number,
   note?: string,
+  timestamp?: Date,
 ): Promise<Operation> {
   return db.transaction(
     'rw',
-    [db.cashAccounts, db.fxTransactions, db.fxLots, db.operations],
+    [db.portfolios, db.holdings, db.cashAccounts, db.fxTransactions, db.fxLots, db.operations, db.snapshots],
     async () => {
-      const snapshotBefore = await buildSnapshot(portfolioId)
+      const opTimestamp = timestamp ?? new Date()
+
+      const snapshotBefore = await captureSnapshot(portfolioId)
+      snapshotBefore.timestamp = new Date(opTimestamp.getTime() - 1)
 
       const account = await requireAccount(portfolioId, currency)
 
@@ -158,13 +151,16 @@ export async function recordCashWithdrawal(
         balance: account.balance - amount,
       })
 
-      const snapshotAfter = await buildSnapshot(portfolioId)
+      const snapshotAfter = await captureSnapshot(portfolioId)
+      snapshotAfter.timestamp = opTimestamp
+
+      await persistSnapshots(portfolioId, snapshotBefore, snapshotAfter)
 
       const operation: Operation = {
         id: crypto.randomUUID(),
         portfolioId,
         type: 'CASH_WITHDRAWAL',
-        timestamp: new Date(),
+        timestamp: opTimestamp,
         entries: [],
         cashFlow: { currency, amount: -amount, note },
         rationale: note ?? `Withdraw ${amount} ${currency}`,
@@ -199,12 +195,16 @@ export interface FxExchangeResult {
 export async function recordFxExchange(
   portfolioId: string,
   params: FxExchangeParams,
+  timestamp?: Date,
 ): Promise<FxExchangeResult> {
   return db.transaction(
     'rw',
-    [db.cashAccounts, db.fxTransactions, db.fxLots, db.operations],
+    [db.portfolios, db.holdings, db.cashAccounts, db.fxTransactions, db.fxLots, db.operations, db.snapshots],
     async () => {
-      const snapshotBefore = await buildSnapshot(portfolioId)
+      const opTimestamp = timestamp ?? new Date()
+
+      const snapshotBefore = await captureSnapshot(portfolioId)
+      snapshotBefore.timestamp = new Date(opTimestamp.getTime() - 1)
 
       // Validate balances before mutating
       const fromAccount = await requireAccount(portfolioId, params.fromCurrency)
@@ -237,11 +237,10 @@ export async function recordFxExchange(
       })
 
       // Create FxTransaction record
-      const now = new Date()
       const fxTransaction: FxTransaction = {
         id: crypto.randomUUID(),
         portfolioId,
-        timestamp: now,
+        timestamp: opTimestamp,
         fromCurrency: params.fromCurrency,
         toCurrency: params.toCurrency,
         fromAmount: params.fromAmount,
@@ -261,17 +260,21 @@ export async function recordFxExchange(
         originalAmount: params.toAmount,
         remainingAmount: params.toAmount,
         rate: params.rate,
-        timestamp: now,
+        timestamp: opTimestamp,
       }
       await db.fxLots.add(fxLot)
 
-      const snapshotAfter = await buildSnapshot(portfolioId, params.rate)
+      // captureSnapshot now picks up the new FxLot → uses params.rate automatically
+      const snapshotAfter = await captureSnapshot(portfolioId)
+      snapshotAfter.timestamp = opTimestamp
+
+      await persistSnapshots(portfolioId, snapshotBefore, snapshotAfter)
 
       const operation: Operation = {
         id: crypto.randomUUID(),
         portfolioId,
         type: 'FX_EXCHANGE',
-        timestamp: now,
+        timestamp: opTimestamp,
         entries: [],
         fxTransactionId: fxTransaction.id,
         rationale: params.note ?? `FX exchange ${params.fromAmount} ${params.fromCurrency} → ${params.toAmount} ${params.toCurrency}`,
@@ -342,3 +345,4 @@ export async function getLatestFxRate(portfolioId: string): Promise<number | nul
   const lots = await loadLotsForPortfolio(portfolioId)
   return engineGetLatestFxRate(lots)
 }
+
