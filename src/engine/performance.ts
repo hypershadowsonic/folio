@@ -816,22 +816,32 @@ export interface PerfChartPoint {
 /**
  * Build chart-ready data points from portfolio snapshots.
  *
- * "Portfolio Value" = holdings only (cash excluded, using snapshot.holdings[].marketValueBase).
- * "Unrealized P&L"  = Σ (marketValueBase − costBasisBase) per holding.
- * "Total P&L"       = portfolioValue − cumulative net capital deployed.
- * "Benchmark"       = portfolio start value × (benchmarkCurrentPrice / benchmarkStartPrice),
- *                     linearly interpolated across data points.
+ * "Portfolio Value"  = Σ snapshot.holdings[].marketValueBase (cash excluded).
+ * "Unrealized P&L"   = Σ (marketValueBase − costBasisBase) per holding in snapshot.
+ * "Total P&L"        = unrealizedPnL + cumulativeRealizedPnL
+ *   where cumulativeRealizedPnL accumulates SELL profits from periodStartMs → snap.timestamp.
+ *   Cash flows (deposits/withdrawals) are NEVER included in P&L.
+ * "Benchmark"        = portfolio start value × (benchmarkCurrentPrice / benchmarkStartPrice),
+ *                      linearly interpolated across data points.
  *
- * @param snapshots              Period snapshots (any order; sorted internally)
- * @param operations             All operations (for cumulative deposits/withdrawals)
- * @param valueCurrency          Display currency
- * @param fxRate                 TWD per USD
+ * The chart's last data point therefore shares the same source of truth as the
+ * metric cards in the UI (both derived from the last period snapshot).
+ *
+ * @param snapshots       Period snapshots (any order; sorted internally)
+ * @param operations      All operations (used only for SELL entry realized PnL)
+ * @param holdings        Current holding records (for averageCostBasis lookup)
+ * @param periodStartMs   Epoch ms of the period start — realized PnL is only accumulated
+ *                        from this point forward (matches the selected date range)
+ * @param valueCurrency   Display currency
+ * @param fxRate          TWD per USD
  * @param benchmarkStartPrice    Optional benchmark price at period start
  * @param benchmarkCurrentPrice  Optional benchmark price at period end
  */
 export function buildPerformanceChartData(
   snapshots: PortfolioSnapshot[],
   operations: Operation[],
+  holdings: Holding[],
+  periodStartMs: number,
   valueCurrency: 'TWD' | 'USD',
   fxRate: number,
   benchmarkStartPrice?: number,
@@ -844,27 +854,26 @@ export function buildPerformanceChartData(
   )
   if (sorted.length === 0) return []
 
-  // Build a sorted timeline of cumulative net capital deployed (deposits − withdrawals)
-  let running = 0
-  const depositTimeline: { ms: number; cumulative: number }[] = operations
-    .filter(op => (op.type === 'CASH_DEPOSIT' || op.type === 'CASH_WITHDRAWAL') && op.cashFlow)
-    .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
-    .map(op => {
-      const rawBase   = op.cashFlow!.currency === 'USD'
-        ? op.cashFlow!.amount * fxRate
-        : op.cashFlow!.amount
-      const inValCcy  = valueCurrency === 'TWD' ? rawBase : (fxRate > 0 ? rawBase / fxRate : 0)
-      running += op.type === 'CASH_DEPOSIT' ? inValCcy : -inValCcy
-      return { ms: new Date(op.timestamp).getTime(), cumulative: running }
-    })
+  // Pre-build a lookup for realized PnL per SELL entry
+  const holdingMap = new Map(holdings.map(h => [h.id, h]))
 
-  function netDeposited(timeMs: number): number {
-    let result = 0
-    for (const e of depositTimeline) {
-      if (e.ms <= timeMs) result = e.cumulative
-      else break
-    }
-    return result
+  // Sort SELL-containing operations within [periodStartMs, ∞) ascending
+  // We'll walk through them in order as we advance through snapshots.
+  const sellOps = operations
+    .filter(op => {
+      const ms = new Date(op.timestamp).getTime()
+      return ms >= periodStartMs && op.entries.some(e => e.side === 'SELL')
+    })
+    .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
+
+  function realizedPnLForEntry(entry: { side: string; holdingId: string; pricePerShare: number; shares: number }): number {
+    if (entry.side !== 'SELL') return 0
+    const holding = holdingMap.get(entry.holdingId)
+    if (!holding) return 0
+    const avgCost   = holding.averageCostBasis ?? 0
+    const pnlNative = (entry.pricePerShare - avgCost) * entry.shares
+    const pnlBase   = holding.currency === 'USD' ? pnlNative * fxRate : pnlNative
+    return valueCurrency === 'TWD' ? pnlBase : (fxRate > 0 ? pnlBase / fxRate : 0)
   }
 
   // Benchmark: indexed to portfolio start value, linearly interpolated
@@ -873,13 +882,29 @@ export function buildPerformanceChartData(
   const startPV      = sorted[0].holdings.reduce((s, h) => s + h.marketValueBase, 0) / divisor
   const n            = sorted.length
 
+  // Running cumulative realized PnL — advanced in lockstep with the sorted snapshots
+  let cumRealizedPnL = 0
+  let sellIdx        = 0
+
   return sorted.map((snap, i) => {
+    const snapMs = new Date(snap.timestamp).getTime()
+
+    // Absorb all sell ops whose timestamp ≤ this snapshot
+    while (sellIdx < sellOps.length) {
+      const opMs = new Date(sellOps[sellIdx].timestamp).getTime()
+      if (opMs > snapMs) break
+      for (const entry of sellOps[sellIdx].entries) {
+        cumRealizedPnL += realizedPnLForEntry(entry)
+      }
+      sellIdx++
+    }
+
     const portfolioValue = snap.holdings.reduce((s, h) => s + h.marketValueBase, 0) / divisor
     const unrealizedPnL  = snap.holdings.reduce(
       (s, h) => s + (h.marketValueBase - h.costBasisBase), 0,
     ) / divisor
-    const snapMs  = new Date(snap.timestamp).getTime()
-    const totalPnL = portfolioValue - netDeposited(snapMs)
+    // BUG 2 FIX: totalPnL is purely investment performance — no cash flows involved
+    const totalPnL = unrealizedPnL + cumRealizedPnL
 
     const point: PerfChartPoint = {
       date: new Date(snap.timestamp).toLocaleDateString(undefined, {

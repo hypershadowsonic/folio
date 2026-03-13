@@ -4,6 +4,7 @@ import { useUIStore } from '@/stores/uiStore'
 import { usePortfolioStore } from '@/stores/portfolioStore'
 import { BottomNav } from '@/components/BottomNav'
 import { Button } from '@/components/ui/button'
+import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { SetupWizard } from '@/features/settings/SetupWizard'
 import { OperationLogger } from '@/features/operations/OperationLogger'
 import { checkAndCaptureWeeklySnapshot } from '@/services/autoSnapshot'
@@ -16,11 +17,11 @@ import Performance from '@/features/performance'
 import Settings from '@/features/settings'
 
 const TAB_CONTENT: Record<TabId, React.ReactNode> = {
-  dashboard:     <Dashboard />,
-  'dca-planner': <DcaPlanner />,
-  operations:    <Operations />,
-  performance:   <Performance />,
-  settings:      <Settings />,
+  dashboard:     <ErrorBoundary tabName="Dashboard"><Dashboard /></ErrorBoundary>,
+  'dca-planner': <ErrorBoundary tabName="DCA Planner"><DcaPlanner /></ErrorBoundary>,
+  operations:    <ErrorBoundary tabName="Operations"><Operations /></ErrorBoundary>,
+  performance:   <ErrorBoundary tabName="Performance"><Performance /></ErrorBoundary>,
+  settings:      <ErrorBoundary tabName="Settings"><Settings /></ErrorBoundary>,
 }
 
 export default function App() {

@@ -40,7 +40,6 @@ import {
   calculateSleeveAttribution,
   calculateBenchmarkComparison,
   calculateRealizedPnL,
-  calculateUnrealizedPnL,
   calculateMoMGrowth,
   buildPerformanceChartData,
   annualizeTWR,
@@ -199,23 +198,38 @@ function usePerformanceData(
       ops as Operation[], currentValue, endDate, startDate, currency, fxRate,
     )
 
-    // ── Current portfolio value (holdings only, live DB fields) ───────────────
-    const currentPortfolioValue = holdings.reduce((s, h) => {
-      const mv     = (h.currentShares ?? 0) * (h.currentPricePerShare ?? 0)
-      const mvBase = h.currency === 'USD' ? mv * fxRate : mv
-      return s + (currency === 'TWD' ? mvBase : (fxRate > 0 ? mvBase / fxRate : 0))
-    }, 0)
+    // ── Current portfolio value + PnL (from last period snapshot) ────────────
+    //
+    // BUG 1 FIX: both the metric cards AND the chart derive values from the same
+    // source — snapshot.holdings[].marketValueBase / costBasisBase.  This
+    // guarantees the cards exactly match the chart's rightmost data point.
+    //
+    // "Current" means the last snapshot captured within the selected period.
+    // Live Holding fields (currentShares × currentPricePerShare) are NOT used
+    // here because they use a different FX basis than the snapshot data and
+    // would cause the chart/card mismatch the user reported.
+    const snapshotStart = periodSnaps[0]
+    const snapshotEnd   = periodSnaps[periodSnaps.length - 1]
+    const divisor       = currency === 'USD' && fxRate > 0 ? fxRate : 1
 
-    // ── P&L metrics ──────────────────────────────────────────────────────────
-    const unrealizedPnL = calculateUnrealizedPnL(holdings as Holding[], currency, fxRate)
-    const realizedPnL   = calculateRealizedPnL(
-      ops as Operation[], startDate, endDate, holdings as Holding[], currency, fxRate,
+    const currentPortfolioValue = snapshotEnd
+      ? snapshotEnd.holdings.reduce((s, h) => s + h.marketValueBase, 0) / divisor
+      : 0
+
+    const unrealizedPnL = snapshotEnd
+      ? snapshotEnd.holdings.reduce((s, h) => s + (h.marketValueBase - h.costBasisBase), 0) / divisor
+      : 0
+
+    // Realized PnL: SELLs from period start up to (and including) the last snapshot.
+    // Using lastSnap.timestamp (not endDate) as the boundary so the card value
+    // exactly matches the chart's last data point's cumRealizedPnL.
+    const realizedPnLEndDate = snapshotEnd ? new Date(snapshotEnd.timestamp) : endDate
+    const realizedPnL = calculateRealizedPnL(
+      ops as Operation[], startDate, realizedPnLEndDate, holdings as Holding[], currency, fxRate,
     )
     const totalPnL = unrealizedPnL + realizedPnL
 
     // ── Sleeve attribution ────────────────────────────────────────────────────
-    const snapshotStart = periodSnaps[0]
-    const snapshotEnd   = periodSnaps[periodSnaps.length - 1]
     const sleeveAttribution = hasSufficientData
       ? calculateSleeveAttribution(
           snapshotStart as PortfolioSnapshot,
@@ -231,9 +245,26 @@ function usePerformanceData(
     const perfChartData = buildPerformanceChartData(
       periodSnaps as PortfolioSnapshot[],
       ops as Operation[],
+      holdings as Holding[],
+      startMs,           // realized PnL accumulates from period start
       currency,
       fxRate,
     )
+
+    // Verification: chart last point must match metric cards
+    if (perfChartData.length > 0) {
+      const last = perfChartData[perfChartData.length - 1]
+      console.log('[Performance] Chart last point:', {
+        portfolioValue: last.portfolioValue.toFixed(2),
+        unrealizedPnL:  last.unrealizedPnL.toFixed(2),
+        totalPnL:       last.totalPnL.toFixed(2),
+      })
+      console.log('[Performance] Card metrics:', {
+        portfolioValue: currentPortfolioValue.toFixed(2),
+        unrealizedPnL:  unrealizedPnL.toFixed(2),
+        totalPnL:       totalPnL.toFixed(2),
+      })
+    }
 
     const momData = calculateMoMGrowth(snaps as PortfolioSnapshot[], 12, currency, fxRate)
 
@@ -599,6 +630,24 @@ export default function PerformancePage() {
     return calculateBenchmarkComparison(data.twrPct, cfg.ticker, cfg.startPrice, cfg.currentPrice)
   }, [data?.twrPct, portfolio?.benchmarkConfig])  // eslint-disable-line react-hooks/exhaustive-deps
 
+  // MUST be before any early returns — hooks cannot be called conditionally
+  const hasBenchmarkLine = (portfolio?.benchmarkConfig?.startPrice ?? 0) > 0 &&
+                           (portfolio?.benchmarkConfig?.currentPrice ?? 0) > 0
+
+  const perfChartWithBm = useMemo(() => {
+    if (!data || !hasBenchmarkLine || data.perfChartData.length === 0) {
+      return data?.perfChartData ?? []
+    }
+    const cfg     = portfolio!.benchmarkConfig!
+    const n       = data.perfChartData.length
+    const startPV = data.perfChartData[0].portfolioValue
+    const bmReturn = (cfg.currentPrice / cfg.startPrice) - 1
+    return data.perfChartData.map((p, i) => ({
+      ...p,
+      benchmarkValue: startPV * (1 + bmReturn * (i / Math.max(n - 1, 1))),
+    }))
+  }, [data, hasBenchmarkLine, portfolio?.benchmarkConfig])  // eslint-disable-line react-hooks/exhaustive-deps
+
   const days = daysBetween(startDate, endDate)
 
   if (!portfolio) return null
@@ -615,22 +664,6 @@ export default function PerformancePage() {
 
   const mwrDisplay = !isNaN(data.mwrAnnualizedPct) ? data.mwrAnnualizedPct : data.mwrSimplePct
   const mwrIsNaN   = isNaN(data.mwrAnnualizedPct)
-
-  const hasBenchmarkLine = (portfolio.benchmarkConfig?.startPrice ?? 0) > 0 &&
-                           (portfolio.benchmarkConfig?.currentPrice ?? 0) > 0
-
-  // Rebuild chart data with benchmark if configured
-  const perfChartWithBm = useMemo(() => {
-    if (!hasBenchmarkLine || data.perfChartData.length === 0) return data.perfChartData
-    const cfg = portfolio.benchmarkConfig!
-    const n   = data.perfChartData.length
-    const startPV = data.perfChartData[0].portfolioValue
-    const bmReturn = (cfg.currentPrice / cfg.startPrice) - 1
-    return data.perfChartData.map((p, i) => ({
-      ...p,
-      benchmarkValue: startPV * (1 + bmReturn * (i / Math.max(n - 1, 1))),
-    }))
-  }, [data.perfChartData, hasBenchmarkLine, portfolio.benchmarkConfig])  // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="flex flex-col pb-28">
