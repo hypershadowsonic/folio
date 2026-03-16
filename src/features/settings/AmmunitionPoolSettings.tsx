@@ -119,7 +119,7 @@ function TierSection({
           <span className="text-xs text-muted-foreground">% from ATH</span>
         </div>
         {error && (
-          <p className="text-[11px] text-red-500">{error}</p>
+          <p className="text-[11px] text-red-500 dark:text-red-400">{error}</p>
         )}
         <p className="text-[10px] text-muted-foreground">
           Enter a negative number (e.g., -10 = deploy when portfolio is 10% below all-time high).

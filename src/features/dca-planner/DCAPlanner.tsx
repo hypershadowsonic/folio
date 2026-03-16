@@ -234,7 +234,7 @@ function TradeTableRow({ trade, sleeveName, execution, onExecutionChange }: Trad
       {/* Status */}
       <td className="py-2.5 px-2 pr-3 align-middle text-center">
         {isHold ? null : filled
-          ? <CheckCircle2 className="h-4 w-4 text-emerald-500 mx-auto" />
+          ? <CheckCircle2 className="h-4 w-4 text-emerald-500 dark:text-emerald-400 mx-auto" />
           : <Circle className="h-4 w-4 text-muted-foreground/40 mx-auto" />
         }
       </td>
@@ -651,7 +651,7 @@ export default function DCAPlanner() {
             {/* No-price advisory (pre-generation) */}
             {noPriceCount > 0 && (
               <div className="flex items-start gap-2 rounded-lg border border-amber-500/40 bg-amber-500/5 px-3 py-2.5">
-                <AlertTriangle className="h-3.5 w-3.5 text-amber-500 shrink-0 mt-0.5" />
+                <AlertTriangle className="h-3.5 w-3.5 text-amber-500 dark:text-amber-400 shrink-0 mt-0.5" />
                 <p className="text-xs text-amber-700 dark:text-amber-400 leading-relaxed">
                   {noPriceCount} holding{noPriceCount > 1 ? 's have' : ' has'} no price set — suggested amount will be shown.
                   Enter actual price and shares when logging.
@@ -665,7 +665,7 @@ export default function DCAPlanner() {
         {saved && loggedCount !== null && (
           <div className="flex items-center justify-between gap-3 rounded-xl border border-emerald-500/40 bg-emerald-500/5 px-4 py-3">
             <div className="flex items-center gap-2">
-              <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0" />
+              <CheckCircle2 className="h-4 w-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
               <span className="text-sm font-medium text-emerald-700 dark:text-emerald-400">
                 Logged {loggedCount} trade{loggedCount !== 1 ? 's' : ''} successfully.
               </span>
@@ -710,7 +710,7 @@ export default function DCAPlanner() {
 
             {plan.cashSufficiency.sufficient && activeTrades.length > 0 && (
               <div className="flex items-center gap-2 rounded-xl border border-emerald-500/40 bg-emerald-500/5 px-4 py-2.5">
-                <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0" />
+                <CheckCircle2 className="h-4 w-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
                 <p className="text-xs text-emerald-700 dark:text-emerald-400 font-medium">
                   Cash sufficient for this plan.
                 </p>
@@ -720,7 +720,7 @@ export default function DCAPlanner() {
             {/* Currency mismatch advisory (case 7) */}
             {currencyMismatchNote && (
               <div className="flex items-start gap-2 rounded-xl border border-amber-500/40 bg-amber-500/5 px-4 py-3">
-                <Info className="h-4 w-4 text-amber-500 shrink-0 mt-0.5" />
+                <Info className="h-4 w-4 text-amber-500 dark:text-amber-400 shrink-0 mt-0.5" />
                 <p className="text-xs text-amber-700 dark:text-amber-400 leading-relaxed">
                   {currencyMismatchNote}
                 </p>
@@ -732,7 +732,7 @@ export default function DCAPlanner() {
               <div className="space-y-1">
                 {plan.warnings.map((w, i) => (
                   <div key={i} className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2">
-                    <AlertTriangle className="h-3.5 w-3.5 text-amber-500 shrink-0 mt-0.5" />
+                    <AlertTriangle className="h-3.5 w-3.5 text-amber-500 dark:text-amber-400 shrink-0 mt-0.5" />
                     <p className="text-xs text-amber-700 dark:text-amber-400 leading-relaxed">{w}</p>
                   </div>
                 ))}
@@ -799,7 +799,7 @@ export default function DCAPlanner() {
                     className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
                   >
                     {copied
-                      ? <><Check className="h-3 w-3 text-emerald-500" /><span className="text-emerald-500">Copied!</span></>
+                      ? <><Check className="h-3 w-3 text-emerald-500 dark:text-emerald-400" /><span className="text-emerald-500 dark:text-emerald-400">Copied!</span></>
                       : <><Copy className="h-3 w-3" />Copy</>
                     }
                   </button>

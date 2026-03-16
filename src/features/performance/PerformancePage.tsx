@@ -354,7 +354,7 @@ function MetricCard({
 
   const colorClass =
     positive === true  ? 'text-emerald-600 dark:text-emerald-400' :
-    positive === false ? 'text-red-500' :
+    positive === false ? 'text-red-500 dark:text-red-400' :
     'text-foreground'
 
   return (
@@ -581,7 +581,7 @@ function SleeveAttributionSection({
                       <div className="h-1 bg-muted rounded-full overflow-hidden ml-6">
                         {/* eslint-disable-next-line react/forbid-dom-props -- dynamic width requires inline style */}
                         <div
-                          className={cn('h-full rounded-full', hPositive ? 'bg-emerald-500' : 'bg-red-400')}
+                          className={cn('h-full rounded-full', hPositive ? 'bg-emerald-500 dark:bg-emerald-400' : 'bg-red-400')}
                           style={{ width: `${hBarPct}%` }}
                         />
                       </div>

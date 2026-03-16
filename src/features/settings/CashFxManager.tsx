@@ -294,7 +294,7 @@ function FxExchangeForm({ portfolioId }: { portfolioId: string }) {
         {/* Success confirmation */}
         {success && (
           <div className="flex items-start gap-2 rounded-md bg-emerald-50 dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800 p-3 text-sm">
-            <CheckCircle2 className="h-4 w-4 text-emerald-600 mt-0.5 shrink-0" />
+            <CheckCircle2 className="h-4 w-4 text-emerald-600 dark:text-emerald-400 mt-0.5 shrink-0" />
             <div>
               <p className="font-medium text-emerald-800 dark:text-emerald-200">Exchange recorded</p>
               <p className="text-emerald-700 dark:text-emerald-300 mt-0.5">

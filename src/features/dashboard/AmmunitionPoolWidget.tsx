@@ -102,7 +102,7 @@ function TierRow({
               </span>
             )}
             {tier.status === 'depleted' && (
-              <span className="text-red-500 font-medium">Fully deployed</span>
+              <span className="text-red-500 dark:text-red-400 font-medium">Fully deployed</span>
             )}
             {tier.status === 'standby' && (
               <>
