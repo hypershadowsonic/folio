@@ -125,7 +125,6 @@ export async function updateHoldingPrice(
       db.cashAccounts,
       db.fxTransactions,
       db.fxLots,
-      db.operations,
       db.snapshots,
     ],
     async () => {

@@ -145,6 +145,19 @@ export default function Dashboard() {
       [portfolioId],
     ) ?? []
 
+  // All snapshots oldest-first — drives the portfolio value chart
+  const allSnaps =
+    useLiveQuery(
+      async () => {
+        if (!portfolioId) return []
+        return db.snapshots
+          .where('[portfolioId+timestamp]')
+          .between([portfolioId, Dexie.minKey], [portfolioId, Dexie.maxKey])
+          .toArray()
+      },
+      [portfolioId],
+    ) ?? []
+
   // Most recent trade timestamp per holding — for "Last Updated" in PriceUpdateDialog
   const lastUpdatedByHolding = useMemo(() => {
     const map = new Map<string, Date>()
@@ -193,7 +206,7 @@ export default function Dashboard() {
       unrealized    += mvBase - cbBase
       costBasis     += cbBase
     }
-    const totalValue = holdingsBase + twdCash + usdCash * fxRate
+    const totalValue = holdingsBase
     return { totalValueBase: totalValue, unrealizedBase: unrealized, costBasisBase: costBasis }
   }, [holdings, fxRate, twdCash, usdCash])
 
@@ -204,22 +217,23 @@ export default function Dashboard() {
   const unrealizedPct     = costBasisBase > 0 ? (unrealizedBase / costBasisBase) * 100 : 0
 
   // ── Chart data (filtered by selected range, oldest-first for chart) ─────────
+  // Reads from db.snapshots — same source as Performance tab — so both charts
+  // always show the same Portfolio Value line.
 
   const chartData = useMemo(() => {
-    if (!allOps.length) return []
+    if (!allSnaps.length) return []
     const fromDate = getFromDate(range)
-    return [...allOps]
-      .reverse()  // oldest first
-      .filter(op => fromDate == null || new Date(op.timestamp) >= fromDate)
-      .map(op => ({
-        date:  fmtDate(op.timestamp),
+    return allSnaps
+      .filter(s => fromDate == null || new Date(s.timestamp) >= fromDate)
+      .map(s => ({
+        date:  fmtDate(s.timestamp),
         value: toDisplay(
-          op.snapshotAfter.totalValueBase,
-          op.snapshotAfter.currentFxRate,
+          s.holdings.reduce((sum, h) => sum + h.marketValueBase, 0),
+          s.currentFxRate,
           currency,
         ),
       }))
-  }, [allOps, range, currency])
+  }, [allSnaps, range, currency])
 
   // Period change vs first data point in range
   const periodChange = useMemo(() => {

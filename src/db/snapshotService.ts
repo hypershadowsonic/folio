@@ -9,8 +9,7 @@
  * db.transaction and call this inside it (all tables listed below must be
  * included in the transaction scope).
  *
- * Tables read: portfolios, holdings, cashAccounts, operations, fxTransactions,
- *              fxLots
+ * Tables read: portfolios, holdings, cashAccounts, fxTransactions, fxLots
  */
 
 import { db } from '@/db'
@@ -69,100 +68,46 @@ export async function resolveCurrentFxRate(portfolioId: string): Promise<number>
   return 1  // ultimate fallback — avoids NaN/Infinity in downstream math
 }
 
-// ─── Holding state accumulator ────────────────────────────────────────────────
-
-interface HoldingAccum {
-  shares: number
-  costBasis: number       // in holding's native currency (USD or TWD)
-  costBasisBase: number   // in TWD
-  lastPrice: number       // most recent pricePerShare seen, in holding's currency
-  lastPriceTs: number     // epoch ms of the operation that set lastPrice
-}
-
 // ─── captureSnapshot ──────────────────────────────────────────────────────────
 
+/**
+ * Reads the current portfolio state directly from denormalized holding fields
+ * (currentShares, currentPricePerShare, averageCostBasis, averageCostBasisBase)
+ * rather than replaying operations. This ensures snapshotAfter always reflects
+ * the just-completed trade, since updateHoldingOnBuy/Sell write these fields
+ * before captureSnapshot is called inside createTradeOperation.
+ */
 export async function captureSnapshot(portfolioId: string): Promise<PortfolioSnapshot> {
-  // Parallel reads (safe — read-only, no transaction needed for consistency here)
-  const [holdings, cashAccounts, operations] = await Promise.all([
+  const [holdings, cashAccounts] = await Promise.all([
     db.holdings.where('portfolioId').equals(portfolioId).toArray(),
     db.cashAccounts.where('portfolioId').equals(portfolioId).toArray(),
-    // Sort ascending so we accumulate in chronological order
-    db.operations
-      .where('[portfolioId+timestamp]')
-      .between([portfolioId, new Date(0)], [portfolioId, new Date('9999-12-31')])
-      .toArray()
-      .then(ops => ops.sort((a, b) =>
-        new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
-      )),
   ])
 
   const fxRate = await resolveCurrentFxRate(portfolioId)
 
-  // ── Per-holding state: accumulated from operation entries ──────────────────
-
-  const accumMap = new Map<string, HoldingAccum>(
-    holdings.map(h => [h.id, {
-      shares: 0,
-      costBasis: 0,
-      costBasisBase: 0,
-      lastPrice: 0,
-      lastPriceTs: 0,
-    }])
-  )
-
-  for (const op of operations) {
-    const opTs = new Date(op.timestamp).getTime()
-
-    for (const entry of op.entries) {
-      const accum = accumMap.get(entry.holdingId)
-      if (!accum) continue  // holding no longer in portfolio (shouldn't happen in MVP)
-
-      // Update last known price (use the entry's timestamp via the operation)
-      if (opTs >= accum.lastPriceTs) {
-        accum.lastPrice = entry.pricePerShare
-        accum.lastPriceTs = opTs
-      }
-
-      if (entry.side === 'BUY') {
-        const grossCost = entry.shares * entry.pricePerShare + entry.fees
-        accum.shares    += entry.shares
-        accum.costBasis += grossCost
-
-        if (entry.fxCostBasis) {
-          // USD holding purchased with TWD via FIFO lots
-          accum.costBasisBase += entry.fxCostBasis.baseCurrencyCost
-        } else {
-          // TWD-denominated holding — cost is already in base currency
-          accum.costBasisBase += grossCost
-        }
-      } else {
-        // SELL — reduce shares and cost basis proportionally (average cost method)
-        if (accum.shares > 0) {
-          const avgCost     = accum.costBasis     / accum.shares
-          const avgCostBase = accum.costBasisBase / accum.shares
-          accum.costBasis     -= avgCost     * entry.shares
-          accum.costBasisBase -= avgCostBase * entry.shares
-        }
-        accum.shares = Math.max(0, accum.shares - entry.shares)
-      }
-    }
-  }
-
   // ── Cash values ────────────────────────────────────────────────────────────
 
-  const twdBalance = cashAccounts.find(a => a.currency === 'TWD')?.balance ?? 0
-  const usdBalance = cashAccounts.find(a => a.currency === 'USD')?.balance ?? 0
+  const twdBalance    = cashAccounts.find(a => a.currency === 'TWD')?.balance ?? 0
+  const usdBalance    = cashAccounts.find(a => a.currency === 'USD')?.balance ?? 0
   const cashValueBase = twdBalance + usdBalance * fxRate
 
   // ── Per-holding market values ──────────────────────────────────────────────
+  // currentShares / currentPricePerShare / averageCostBasis / averageCostBasisBase
+  // are updated by updateHoldingOnBuy / updateHoldingOnSell before captureSnapshot
+  // is called, so these values reflect the post-trade state correctly.
 
   const holdingValues = holdings.map(h => {
-    const accum = accumMap.get(h.id)!
-    const marketValue     = accum.shares * accum.lastPrice
-    const marketValueBase = h.currency === 'USD'
-      ? marketValue * fxRate
-      : marketValue                  // TWD holding — already in base currency
-    return { holding: h, accum, marketValue, marketValueBase }
+    const shares      = h.currentShares        ?? 0
+    const price       = h.currentPricePerShare  ?? 0
+    const avgCost     = h.averageCostBasis      ?? 0
+    const avgCostBase = h.averageCostBasisBase  ?? 0
+
+    const marketValue     = shares * price
+    const marketValueBase = h.currency === 'USD' ? marketValue * fxRate : marketValue
+    const costBasis       = shares * avgCost
+    const costBasisBase   = shares * avgCostBase
+
+    return { h, shares, price, marketValue, marketValueBase, costBasis, costBasisBase }
   })
 
   const holdingsValueBase = holdingValues.reduce((s, v) => s + v.marketValueBase, 0)
@@ -171,21 +116,20 @@ export async function captureSnapshot(portfolioId: string): Promise<PortfolioSna
   // ── Build HoldingSnapshot[] ────────────────────────────────────────────────
 
   const holdingSnapshots: HoldingSnapshot[] = holdingValues.map(
-    ({ holding, accum, marketValue, marketValueBase }) => {
-      // Allocation % = share of invested capital only (cash excluded from denominator)
-      const allocationPct  = holdingsValueBase > 0
+    ({ h, shares, price, marketValue, marketValueBase, costBasis, costBasisBase }) => {
+      const allocationPct   = holdingsValueBase > 0
         ? (marketValueBase / holdingsValueBase) * 100
         : 0
-      const driftFromTarget = allocationPct - holding.targetAllocationPct
+      const driftFromTarget = allocationPct - h.targetAllocationPct
 
       return {
-        holdingId:        holding.id,
-        shares:           accum.shares,
-        pricePerShare:    accum.lastPrice,
+        holdingId:     h.id,
+        shares,
+        pricePerShare: price,
         marketValue,
         marketValueBase,
-        costBasis:        accum.costBasis,
-        costBasisBase:    accum.costBasisBase,
+        costBasis,
+        costBasisBase,
         allocationPct,
         driftFromTarget,
       }
