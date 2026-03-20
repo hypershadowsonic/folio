@@ -1,8 +1,11 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { Plus, Trash2, Check, Loader2, AlertTriangle } from 'lucide-react'
+import { Plus, Trash2, Check, Loader2, AlertTriangle, MinusCircle, RotateCcw, Archive } from 'lucide-react'
+import { IBKRImport } from './IBKRImport'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db } from '@/db/database'
 import { captureAndStoreSnapshot } from '@/services/autoSnapshot'
+import { moveHoldingToLegacy, archiveHolding } from '@/db/holdingService'
+import { restoreHolding } from '@/services/holdingLifecycle'
 import { usePortfolioStore } from '@/stores/portfolioStore'
 import { useDebouncedCallback } from '@/hooks/useDebounce'
 import { Button } from '@/components/ui/button'
@@ -205,14 +208,15 @@ function ColorSwatch({
 // ─── Holding row ──────────────────────────────────────────────────────────────
 
 function HoldingRow({
-  holding, onChange, onRemove,
+  holding, onChange, onRemove, onMoveToLegacy,
 }: {
   holding: DraftHolding
   onChange: (patch: Partial<DraftHolding>) => void
   onRemove: () => void
+  onMoveToLegacy?: () => void
 }) {
   return (
-    <div className="grid grid-cols-[60px_1fr_70px_60px_52px_28px] items-center gap-1.5">
+    <div className="grid grid-cols-[60px_1fr_70px_60px_52px_28px_28px] items-center gap-1.5">
       <Input
         value={holding.ticker}
         onChange={(e) => onChange({ ticker: e.target.value.toUpperCase() })}
@@ -260,6 +264,18 @@ function HoldingRow({
       >
         <Trash2 className="h-3.5 w-3.5" />
       </button>
+      {onMoveToLegacy ? (
+        <button
+          type="button" onClick={onMoveToLegacy}
+          className="flex h-8 w-7 items-center justify-center rounded text-muted-foreground hover:text-amber-600 dark:hover:text-amber-400 transition-colors"
+          aria-label="Move to legacy"
+          title="Move to Legacy — excludes from DCA and drift"
+        >
+          <MinusCircle className="h-3.5 w-3.5" />
+        </button>
+      ) : (
+        <span />
+      )}
     </div>
   )
 }
@@ -279,9 +295,34 @@ export function PortfolioSettings({ portfolioId }: { portfolioId: string }) {
   const [dcaCurrency,    setDcaCurrency]    = useState(portfolio.monthlyDCABudgetCurrency)
   const [strategy,       setStrategy]       = useState(portfolio.defaultRebalanceStrategy)
   const [method,         setMethod]         = useState(portfolio.defaultAllocationMethod)
+  const [minBuyUSD,      setMinBuyUSD]      = useState(String(portfolio.minimumBuyAmountUSD ?? 0))
+  const [minBuyTWD,      setMinBuyTWD]      = useState(String(portfolio.minimumBuyAmountTWD ?? 0))
 
   // Pending sleeve delete requires inline confirmation (when it has holdings)
   const [pendingDeleteSleeveId, setPendingDeleteSleeveId] = useState<string | null>(null)
+
+  // ── Holdings tab state ───────────────────────────────────────────────────
+  const [holdingsTab, setHoldingsTab] = useState<'active' | 'legacy' | 'archived'>('active')
+  const [reactivateHoldingId, setReactivateHoldingId] = useState<string | null>(null)
+  const [reactivateSleeve, setReactivateSleeve]       = useState('')
+  const [reactivateTargetPct, setReactivateTargetPct] = useState('0')
+
+  const legacyHoldings = useLiveQuery(
+    () => db.holdings.where('portfolioId').equals(portfolioId)
+      .filter(h => h.status === 'legacy').sortBy('ticker'),
+    [portfolioId], [],
+  ) as Holding[]
+
+  const archivedHoldings = useLiveQuery(
+    () => db.holdings.where('portfolioId').equals(portfolioId)
+      .filter(h => h.status === 'archived').toArray()
+      .then(arr => arr.sort((a, b) => {
+        const ta = a.archivedAt ? new Date(a.archivedAt).getTime() : 0
+        const tb = b.archivedAt ? new Date(b.archivedAt).getTime() : 0
+        return tb - ta
+      })),
+    [portfolioId], [],
+  ) as Holding[]
 
   // ── Save indicator ───────────────────────────────────────────────────────
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle')
@@ -309,7 +350,8 @@ export function PortfolioSettings({ portfolioId }: { portfolioId: string }) {
 
     Promise.all([
       db.sleeves.where('portfolioId').equals(portfolioId).toArray(),
-      db.holdings.where('portfolioId').equals(portfolioId).sortBy('ticker'),
+      db.holdings.where('portfolioId').equals(portfolioId)
+        .filter(h => !h.status || h.status === 'active').sortBy('ticker'),
       db.cashAccounts.where('portfolioId').equals(portfolioId).toArray(),
     ]).then(([sleeves, holdings, cash]) => {
       setLocalSleeves(sleeves.map(toDraftSleeve))
@@ -348,12 +390,15 @@ export function PortfolioSettings({ portfolioId }: { portfolioId: string }) {
           targetAllocationPct: parseFloat(h.targetPct) || 0,
           driftThresholdPct: parseFloat(h.driftThresholdPct) || 2,
           currency: h.currency,
+          status: 'active' as const,
           // Restore position tracking fields (undefined = never traded, preserved as-is)
           ...positionMap.get(h.id),
         }))
         await db.transaction('rw', [db.sleeves, db.holdings], async () => {
           await db.sleeves.where('portfolioId').equals(portfolioId).delete()
-          await db.holdings.where('portfolioId').equals(portfolioId).delete()
+          // Only delete+replace active holdings; legacy/archived are managed separately
+          await db.holdings.where('portfolioId').equals(portfolioId)
+            .filter(h => !h.status || h.status === 'active').delete()
           if (dbSleeves.length)  await db.sleeves.bulkAdd(dbSleeves)
           if (dbHoldings.length) await db.holdings.bulkAdd(dbHoldings)
         })
@@ -388,6 +433,46 @@ export function PortfolioSettings({ portfolioId }: { portfolioId: string }) {
       })),
     500,
   )
+
+  // ── Save: minimum buy amounts ─────────────────────────────────────────────
+  const debouncedSaveMinBuy = useDebouncedCallback(
+    (usd: string, twd: string) =>
+      indicateSave(() => updatePortfolio({
+        minimumBuyAmountUSD: parseFloat(usd) || 0,
+        minimumBuyAmountTWD: parseFloat(twd) || 0,
+      })),
+    500,
+  )
+
+  // ── Holding lifecycle helpers ─────────────────────────────────────────────
+
+  async function moveToLegacy(holdingId: string) {
+    await moveHoldingToLegacy(holdingId)
+    const next = localHoldings.filter(h => h.id !== holdingId)
+    setLocalHoldings(next)
+    debouncedSaveStructure(localSleeves, next)
+  }
+
+  async function doArchive(holdingId: string) {
+    await archiveHolding(holdingId)
+  }
+
+  async function doRestoreToLegacy(holdingId: string) {
+    await restoreHolding(holdingId, 'legacy')
+  }
+
+  async function doRestoreToActive(holdingId: string) {
+    if (!reactivateSleeve) return
+    await restoreHolding(holdingId, 'active', {
+      sleeveId: reactivateSleeve,
+      targetAllocationPct: parseFloat(reactivateTargetPct) || 0,
+    })
+    setReactivateHoldingId(null)
+    // Re-sync active holdings from Dexie into draft state
+    const fresh = await db.holdings.where('portfolioId').equals(portfolioId)
+      .filter(h => !h.status || h.status === 'active').sortBy('ticker')
+    setLocalHoldings(fresh.map(toDraftHolding))
+  }
 
   // ── Sleeve helpers ───────────────────────────────────────────────────────
 
@@ -501,6 +586,38 @@ export function PortfolioSettings({ portfolioId }: { portfolioId: string }) {
         title="Sleeves & Holdings"
         description="Grouped holdings with target allocations. Sleeve targets must sum to 100%."
       >
+        {/* Tab switcher */}
+        <div className="flex rounded-lg bg-muted p-1 gap-1">
+          {(['active', 'legacy', 'archived'] as const).map((tab) => (
+            <button
+              key={tab}
+              type="button"
+              onClick={() => setHoldingsTab(tab)}
+              className={cn(
+                'flex-1 py-1.5 text-xs rounded-md transition-colors capitalize flex items-center justify-center gap-1',
+                holdingsTab === tab
+                  ? 'bg-background text-foreground shadow-sm font-medium'
+                  : 'text-muted-foreground hover:text-foreground',
+              )}
+            >
+              {tab}
+              {tab === 'legacy' && legacyHoldings.length > 0 && (
+                <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-amber-100 px-1 text-[10px] font-medium text-amber-700 dark:bg-amber-900/30 dark:text-amber-400">
+                  {legacyHoldings.length}
+                </span>
+              )}
+              {tab === 'archived' && archivedHoldings.length > 0 && (
+                <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-muted-foreground/20 px-1 text-[10px] font-medium text-muted-foreground">
+                  {archivedHoldings.length}
+                </span>
+              )}
+            </button>
+          ))}
+        </div>
+
+        {/* ── Active tab ─────────────────────────────────────────────────── */}
+        {holdingsTab === 'active' && (<>
+
         {/* Sleeve total validation banner */}
         {!sleeveTotalOk && localSleeves.length > 0 && (
           <div className="flex items-center gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 dark:border-amber-900 dark:bg-amber-950">
@@ -573,9 +690,9 @@ export function PortfolioSettings({ portfolioId }: { portfolioId: string }) {
                 <div className="ml-9 space-y-2">
                   {/* Holdings column headers */}
                   {sleeveHoldings.length > 0 && (
-                    <div className="grid grid-cols-[60px_1fr_70px_60px_52px_28px] gap-1.5 px-0.5">
-                      {['Ticker', 'Name', 'Target', 'CCY', 'Drift', ''].map((h) => (
-                        <span key={h} className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">{h}</span>
+                    <div className="grid grid-cols-[60px_1fr_70px_60px_52px_28px_28px] gap-1.5 px-0.5">
+                      {['Ticker', 'Name', 'Target', 'CCY', 'Drift', '', ''].map((hdr, i) => (
+                        <span key={i} className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">{hdr}</span>
                       ))}
                     </div>
                   )}
@@ -586,6 +703,7 @@ export function PortfolioSettings({ portfolioId }: { portfolioId: string }) {
                       holding={h}
                       onChange={(patch) => updateHolding(h.id, patch)}
                       onRemove={() => removeHolding(h.id)}
+                      onMoveToLegacy={() => moveToLegacy(h.id)}
                     />
                   ))}
 
@@ -621,6 +739,193 @@ export function PortfolioSettings({ portfolioId }: { portfolioId: string }) {
         <Button type="button" variant="outline" size="sm" onClick={addSleeve} className="gap-2">
           <Plus className="h-4 w-4" /> Add sleeve
         </Button>
+
+        </>)}
+
+        {/* ── Legacy tab ──────────────────────────────────────────────────── */}
+        {holdingsTab === 'legacy' && (
+          <div className="space-y-3">
+            {legacyHoldings.length === 0 ? (
+              <p className="py-4 text-center text-sm text-muted-foreground">
+                No legacy holdings. Use "Move to Legacy" (
+                <MinusCircle className="inline h-3 w-3" />
+                ) on an active holding to exclude it from DCA and drift.
+              </p>
+            ) : (
+              <div className="space-y-2">
+                <p className="text-xs text-muted-foreground">
+                  Legacy holdings remain in your portfolio but are excluded from DCA, drift alerts, and target allocation.
+                </p>
+                {legacyHoldings.map((h) => {
+                  const shares     = h.currentShares ?? 0
+                  const price      = h.currentPricePerShare ?? 0
+                  const marketVal  = shares * price
+                  const costBasis  = shares * (h.averageCostBasis ?? 0)
+                  const pnl        = marketVal - costBasis
+                  const pnlPct     = costBasis > 0 ? (pnl / costBasis) * 100 : 0
+                  const isExpanded = reactivateHoldingId === h.id
+
+                  return (
+                    <div key={h.id} className="space-y-2">
+                      <div className="flex items-center gap-3 rounded-lg border px-3 py-2.5">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="font-mono text-sm font-medium">{h.ticker}</span>
+                            <span className="text-xs text-muted-foreground truncate">{h.name}</span>
+                          </div>
+                          <div className="flex items-center gap-3 mt-0.5">
+                            <span className="text-xs text-muted-foreground">{shares.toFixed(4)} shares</span>
+                            {marketVal > 0 && (
+                              <span className="text-xs text-muted-foreground">
+                                {h.currency === 'USD'
+                                  ? `$${marketVal.toFixed(2)}`
+                                  : `NT$${marketVal.toLocaleString('en-US', { maximumFractionDigits: 0 })}`}
+                              </span>
+                            )}
+                            {costBasis > 0 && (
+                              <span className={cn('text-xs', pnl >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-destructive')}>
+                                {pnl >= 0 ? '+' : ''}{pnlPct.toFixed(1)}%
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1 shrink-0">
+                          {shares === 0 && (
+                            <Button size="sm" variant="ghost"
+                              className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground"
+                              onClick={() => doArchive(h.id)}
+                            >
+                              <Archive className="h-3.5 w-3.5 mr-1" />Archive
+                            </Button>
+                          )}
+                          <Button size="sm" variant="ghost" className="h-7 px-2 text-xs"
+                            onClick={() => {
+                              setReactivateHoldingId(isExpanded ? null : h.id)
+                              setReactivateSleeve(''); setReactivateTargetPct('0')
+                            }}
+                          >
+                            <RotateCcw className="h-3.5 w-3.5 mr-1" />Reactivate
+                          </Button>
+                        </div>
+                      </div>
+                      {isExpanded && (
+                        <div className="ml-4 flex items-end gap-2 rounded-lg border border-primary/30 bg-primary/5 px-3 py-2.5">
+                          <div className="space-y-1 flex-1">
+                            <Label className="text-xs">Sleeve</Label>
+                            <Select value={reactivateSleeve} onValueChange={setReactivateSleeve}>
+                              <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="Select sleeve…" /></SelectTrigger>
+                              <SelectContent>
+                                {localSleeves.map(s => <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>)}
+                              </SelectContent>
+                            </Select>
+                          </div>
+                          <div className="space-y-1 w-24">
+                            <Label className="text-xs">Target %</Label>
+                            <div className="relative">
+                              <Input type="number" min={0} max={100} step={0.5}
+                                value={reactivateTargetPct}
+                                onChange={e => setReactivateTargetPct(e.target.value)}
+                                className="h-8 text-xs pr-5 text-right"
+                              />
+                              <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-muted-foreground">%</span>
+                            </div>
+                          </div>
+                          <Button size="sm" className="h-8 text-xs" disabled={!reactivateSleeve}
+                            onClick={() => doRestoreToActive(h.id)}>Confirm</Button>
+                          <Button size="sm" variant="ghost" className="h-8 text-xs"
+                            onClick={() => setReactivateHoldingId(null)}>Cancel</Button>
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── Archived tab ─────────────────────────────────────────────────── */}
+        {holdingsTab === 'archived' && (
+          <div className="space-y-3">
+            <div className="flex items-center gap-2 rounded-md border border-muted bg-muted/30 px-3 py-2">
+              <Archive className="h-4 w-4 shrink-0 text-muted-foreground" />
+              <p className="text-xs text-muted-foreground">
+                Archived holdings have 0 shares. Historical operations are preserved.
+              </p>
+            </div>
+            {archivedHoldings.length === 0 ? (
+              <p className="py-4 text-center text-sm text-muted-foreground">No archived holdings.</p>
+            ) : (
+              <div className="space-y-2">
+                {archivedHoldings.map((h) => {
+                  const isExpanded  = reactivateHoldingId === h.id
+                  const archivedDate = h.archivedAt
+                    ? new Date(h.archivedAt).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
+                    : '—'
+
+                  return (
+                    <div key={h.id} className="space-y-2">
+                      <div className="flex items-center gap-3 rounded-lg border px-3 py-2.5 opacity-75">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="font-mono text-sm font-medium">{h.ticker}</span>
+                            <span className="text-xs text-muted-foreground truncate">{h.name}</span>
+                          </div>
+                          <p className="text-xs text-muted-foreground mt-0.5">Archived {archivedDate}</p>
+                        </div>
+                        <div className="flex items-center gap-1 shrink-0">
+                          <Button size="sm" variant="ghost"
+                            className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground"
+                            onClick={() => doRestoreToLegacy(h.id)}
+                          >
+                            <RotateCcw className="h-3.5 w-3.5 mr-1" />To Legacy
+                          </Button>
+                          <Button size="sm" variant="ghost" className="h-7 px-2 text-xs"
+                            onClick={() => {
+                              setReactivateHoldingId(isExpanded ? null : h.id)
+                              setReactivateSleeve(''); setReactivateTargetPct('0')
+                            }}
+                          >
+                            To Active
+                          </Button>
+                        </div>
+                      </div>
+                      {isExpanded && (
+                        <div className="ml-4 flex items-end gap-2 rounded-lg border border-primary/30 bg-primary/5 px-3 py-2.5">
+                          <div className="space-y-1 flex-1">
+                            <Label className="text-xs">Sleeve</Label>
+                            <Select value={reactivateSleeve} onValueChange={setReactivateSleeve}>
+                              <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="Select sleeve…" /></SelectTrigger>
+                              <SelectContent>
+                                {localSleeves.map(s => <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>)}
+                              </SelectContent>
+                            </Select>
+                          </div>
+                          <div className="space-y-1 w-24">
+                            <Label className="text-xs">Target %</Label>
+                            <div className="relative">
+                              <Input type="number" min={0} max={100} step={0.5}
+                                value={reactivateTargetPct}
+                                onChange={e => setReactivateTargetPct(e.target.value)}
+                                className="h-8 text-xs pr-5 text-right"
+                              />
+                              <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-muted-foreground">%</span>
+                            </div>
+                          </div>
+                          <Button size="sm" className="h-8 text-xs" disabled={!reactivateSleeve}
+                            onClick={() => doRestoreToActive(h.id)}>Confirm</Button>
+                          <Button size="sm" variant="ghost" className="h-8 text-xs"
+                            onClick={() => setReactivateHoldingId(null)}>Cancel</Button>
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
       </SettingsSection>
 
       {/* ── Cash Balances ──────────────────────────────────────────────── */}
@@ -783,9 +1088,67 @@ export function PortfolioSettings({ portfolioId }: { portfolioId: string }) {
             ))}
           </RadioGroup>
         </div>
+
+        <Separator />
+
+        {/* Minimum buy amount */}
+        <div className="space-y-2">
+          <Label>Minimum buy amount per trade</Label>
+          <p className="text-xs text-muted-foreground">
+            Trades below this amount are skipped and their budget redistributed to the remaining holdings. Set to 0 to disable.
+          </p>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <Label htmlFor="min-buy-usd" className="text-xs text-muted-foreground">USD holdings</Label>
+              <div className="relative">
+                <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm font-medium text-muted-foreground">$</span>
+                <Input
+                  id="min-buy-usd"
+                  type="number"
+                  min={0}
+                  step={10}
+                  value={minBuyUSD}
+                  onChange={(e) => {
+                    setMinBuyUSD(e.target.value)
+                    debouncedSaveMinBuy(e.target.value, minBuyTWD)
+                  }}
+                  placeholder="e.g. 30"
+                  className="pl-7"
+                />
+              </div>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="min-buy-twd" className="text-xs text-muted-foreground">TWD holdings</Label>
+              <div className="relative">
+                <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm font-medium text-muted-foreground">NT$</span>
+                <Input
+                  id="min-buy-twd"
+                  type="number"
+                  min={0}
+                  step={100}
+                  value={minBuyTWD}
+                  onChange={(e) => {
+                    setMinBuyTWD(e.target.value)
+                    debouncedSaveMinBuy(minBuyUSD, e.target.value)
+                  }}
+                  placeholder="e.g. 1000"
+                  className="pl-10"
+                />
+              </div>
+            </div>
+          </div>
+        </div>
       </SettingsSection>
 
       <DataSection portfolioId={portfolioId} />
+
+      {/* ── Import ─────────────────────────────────────────────────── */}
+      <SettingsSection
+        title="Import from IBKR"
+        description="Import trades from an IBKR Activity Statement CSV. Each trade row creates one Operation. Unrecognised symbols are auto-created as Legacy holdings."
+      >
+        <IBKRImport portfolioId={portfolioId} />
+      </SettingsSection>
 
     </div>
   )

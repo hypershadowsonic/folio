@@ -157,7 +157,7 @@ npm run typecheck    # tsc --noEmit
 1. **No backend.** MVP is fully client-side. All data in IndexedDB. Do not introduce any server, API endpoint, or external database.
 2. **No live price feeds.** Users manually enter prices when logging operations. Do not fetch from Yahoo Finance, Alpha Vantage, or any market data API.
 3. **No live FX rates.** FX rates come from user's manually logged FX transactions. The most recent transaction rate is used for current valuation.
-4. **No broker integration.** No IBKR API, no Flex Query import. User logs operations manually.
+4. **No live broker integration.** No IBKR API, no live Flex Query. IBKR Activity Statement CSV import (file-based, offline) is in scope — see `src/lib/ibkrParser.ts` and `src/features/settings/IBKRImport.tsx`.
 5. **Single portfolio only.** MVP does not support multiple portfolios.
 6. **Operations are immutable.** After creation, core data (type, entries, amounts) cannot be edited. Users can only add notes.
 7. **Rationale is required** on every Operation. Do not make it optional — this is a deliberate design choice.

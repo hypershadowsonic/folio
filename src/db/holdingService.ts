@@ -90,12 +90,13 @@ export async function updateHoldingOnSell(
   if (!holding) throw new Error(`Holding ${holdingId} not found`)
 
   const currentShares = holding.currentShares ?? 0
-  if (shares > currentShares) {
+  const EPSILON = 1e-9
+  if (shares > currentShares + EPSILON) {
     throw new InsufficientSharesError(holdingId, shares - currentShares)
   }
 
   await db.holdings.update(holdingId, {
-    currentShares:        currentShares - shares,
+    currentShares:        Math.max(0, currentShares - shares),
     currentPricePerShare: pricePerShare,
     // averageCostBasis and averageCostBasisBase remain unchanged on SELL
   })
@@ -141,6 +142,40 @@ export async function updateHoldingPrice(
       })
     },
   )
+}
+
+// ─── Lifecycle helpers ────────────────────────────────────────────────────────
+
+/**
+ * Move an active holding to legacy status.
+ * Sets targetAllocationPct = 0 (legacy holdings have no allocation target).
+ * Throws if the holding has no shares (use archiveHolding instead).
+ */
+export async function moveHoldingToLegacy(id: string): Promise<void> {
+  const holding = await db.holdings.get(id)
+  if (!holding) throw new Error(`Holding ${id} not found`)
+  await db.holdings.update(id, {
+    status: 'legacy',
+    targetAllocationPct: 0,
+  })
+}
+
+/**
+ * Archive a holding (status → 'archived').
+ * Throws if the holding still has shares > 0 (must fully sell first).
+ */
+export async function archiveHolding(id: string): Promise<void> {
+  const holding = await db.holdings.get(id)
+  if (!holding) throw new Error(`Holding ${id} not found`)
+  const shares = holding.currentShares ?? 0
+  if (shares > 0) {
+    throw new Error(`Cannot archive ${holding.ticker}: still holds ${shares} shares`)
+  }
+  await db.holdings.update(id, {
+    status: 'archived',
+    targetAllocationPct: 0,
+    archivedAt: new Date(),
+  })
 }
 
 // ─── getHoldingSummary ────────────────────────────────────────────────────────

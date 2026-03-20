@@ -9,10 +9,11 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from 'recharts'
-import { TrendingUp, TrendingDown, ArrowRight, RefreshCw } from 'lucide-react'
+import { TrendingUp, TrendingDown, ArrowRight, RefreshCw, ChevronDown, ChevronRight, Package } from 'lucide-react'
 import { usePortfolioStore } from '@/stores/portfolioStore'
 import { useUIStore, type DisplayCurrency } from '@/stores/uiStore'
-import { useCashAccounts, useHoldings } from '@/db/hooks'
+import { useCashAccounts, useHoldings, useLegacyHoldings } from '@/db/hooks'
+import type { Holding } from '@/types'
 import { DriftMonitor } from './DriftMonitor'
 import { AmmunitionPoolWidget } from './AmmunitionPoolWidget'
 import { PriceUpdateDialog } from './PriceUpdateDialog'
@@ -115,6 +116,95 @@ function ChartTooltip({ active, payload, label, currency }: TooltipProps) {
   )
 }
 
+// ─── LegacyHoldingsSection ────────────────────────────────────────────────────
+
+interface LegacyHoldingsSectionProps {
+  holdings: Holding[]
+  fxRate: number
+  currency: DisplayCurrency
+}
+
+function LegacyHoldingsSection({ holdings, fxRate, currency }: LegacyHoldingsSectionProps) {
+  const [open, setOpen] = useState(false)
+
+  if (holdings.length === 0) return null
+
+  const totalBase = holdings.reduce((sum, h) => {
+    const mv = (h.currentShares ?? 0) * (h.currentPricePerShare ?? 0)
+    return sum + (h.currency === 'USD' ? mv * fxRate : mv)
+  }, 0)
+  const totalDisplay = currency === 'TWD' ? totalBase : (fxRate > 0 ? totalBase / fxRate : 0)
+
+  return (
+    <div className="rounded-xl border border-border bg-card overflow-hidden">
+      <button
+        type="button"
+        className="w-full flex items-center justify-between px-4 py-3 hover:bg-muted/40 transition-colors"
+        onClick={() => setOpen(v => !v)}
+      >
+        <div className="flex items-center gap-2">
+          <Package className="h-4 w-4 text-muted-foreground" />
+          <span className="text-sm font-semibold">Legacy Holdings</span>
+          <span className="text-xs text-muted-foreground font-normal">
+            ({holdings.length})
+          </span>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-medium tabular-nums text-muted-foreground">
+            {new Intl.NumberFormat(undefined, {
+              style: 'currency', currency,
+              maximumFractionDigits: currency === 'TWD' ? 0 : 2,
+              notation: 'compact',
+            }).format(totalDisplay)}
+          </span>
+          {open ? <ChevronDown className="h-4 w-4 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
+        </div>
+      </button>
+
+      {open && (
+        <div className="border-t border-border divide-y divide-border/60">
+          {holdings.map(h => {
+            const shares    = h.currentShares ?? 0
+            const price     = h.currentPricePerShare ?? 0
+            const mv        = shares * price
+            const mvBase    = h.currency === 'USD' ? mv * fxRate : mv
+            const cbBase    = shares * (h.averageCostBasisBase ?? 0)
+            const pnlBase   = mvBase - cbBase
+            const pnlPct    = cbBase > 0 ? (pnlBase / cbBase) * 100 : 0
+            const mvDisplay = currency === 'TWD' ? mvBase : (fxRate > 0 ? mvBase / fxRate : 0)
+            const pnlDisplay= currency === 'TWD' ? pnlBase : (fxRate > 0 ? pnlBase / fxRate : 0)
+            const pnlUp     = pnlDisplay >= 0
+
+            return (
+              <div key={h.id} className="flex items-center justify-between px-4 py-2.5">
+                <div className="min-w-0">
+                  <p className="text-sm font-medium font-mono">{h.ticker}</p>
+                  <p className="text-xs text-muted-foreground">{shares.toFixed(4)} shares @ {h.currency}{price.toFixed(2)}</p>
+                </div>
+                <div className="text-right shrink-0 ml-4">
+                  <p className="text-sm font-medium tabular-nums">
+                    {new Intl.NumberFormat(undefined, {
+                      style: 'currency', currency,
+                      maximumFractionDigits: currency === 'TWD' ? 0 : 2,
+                    }).format(mvDisplay)}
+                  </p>
+                  <p className={cn('text-xs tabular-nums', pnlUp ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400')}>
+                    {pnlUp ? '+' : ''}{new Intl.NumberFormat(undefined, {
+                      style: 'currency', currency,
+                      maximumFractionDigits: currency === 'TWD' ? 0 : 2,
+                      notation: 'compact',
+                    }).format(pnlDisplay)} ({pnlUp ? '+' : ''}{pnlPct.toFixed(1)}%)
+                  </p>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ─── Dashboard ────────────────────────────────────────────────────────────────
 
 export default function Dashboard() {
@@ -123,9 +213,10 @@ export default function Dashboard() {
   const setCurrency  = useUIStore(s => s.setDashboardCurrency)
   const setActiveTab = useUIStore(s => s.setActiveTab)
 
-  const portfolioId  = portfolio?.id
-  const cashAccounts = useCashAccounts(portfolioId)
-  const holdings     = useHoldings(portfolioId)
+  const portfolioId    = portfolio?.id
+  const cashAccounts   = useCashAccounts(portfolioId)
+  const holdings       = useHoldings(portfolioId)
+  const legacyHoldings = useLegacyHoldings(portfolioId)
 
   const [range, setRange]           = useState<Range>('1Y')
   const [priceOpen, setPriceOpen]   = useState(false)
@@ -428,6 +519,13 @@ export default function Dashboard() {
       <DriftMonitor
         portfolioId={portfolio.id}
         onNavigateToDCA={() => setActiveTab('dca-planner')}
+      />
+
+      {/* ── Legacy Holdings ───────────────────────────────────────────────────── */}
+      <LegacyHoldingsSection
+        holdings={legacyHoldings}
+        fxRate={fxRate}
+        currency={currency}
       />
 
       {/* ── Cash Balances ─────────────────────────────────────────────────────── */}

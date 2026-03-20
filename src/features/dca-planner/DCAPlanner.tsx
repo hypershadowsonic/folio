@@ -28,7 +28,7 @@ import {
 import { usePortfolioStore } from '@/stores/portfolioStore'
 import { useUIStore } from '@/stores/uiStore'
 import { useDriftSummary } from '@/features/dashboard/DriftMonitor'
-import { useCashAccounts, useHoldings, useSleeves } from '@/db/hooks'
+import { useCashAccounts, useActiveHoldings, useSleeves } from '@/db/hooks'
 import { useLiveQuery } from 'dexie-react-hooks'
 import Dexie from 'dexie'
 import { db } from '@/db/database'
@@ -39,7 +39,7 @@ import {
   calculateCurrentAllocations,
   generateRebalancePlan,
 } from '@/engine/rebalance'
-import type { TradePlan } from '@/engine/rebalance'
+import type { TradePlan, MinimumBuyAmounts } from '@/engine/rebalance'
 import { Info } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -261,7 +261,7 @@ export default function DCAPlanner() {
   const setActiveTab       = useUIStore(s => s.setActiveTab)
   const portfolioId        = portfolio?.id
   const cashAccounts       = useCashAccounts(portfolioId)
-  const holdings           = useHoldings(portfolioId)
+  const holdings           = useActiveHoldings(portfolioId)
   const sleeves            = useSleeves(portfolioId)
   const driftSummary       = useDriftSummary(portfolioId)
 
@@ -336,6 +336,11 @@ export default function DCAPlanner() {
     [holdingStates, sleeveMap],
   )
 
+  const minimumBuyAmounts = useMemo((): MinimumBuyAmounts => ({
+    usd: portfolio?.minimumBuyAmountUSD ?? 0,
+    twd: portfolio?.minimumBuyAmountTWD ?? 0,
+  }), [portfolio?.minimumBuyAmountUSD, portfolio?.minimumBuyAmountTWD])
+
   const plan = useMemo(() => {
     if (!planGenerated || holdingStates.length === 0) return null
     return generateRebalancePlan(
@@ -346,8 +351,9 @@ export default function DCAPlanner() {
       strategy,
       method,
       cashBalances,
+      minimumBuyAmounts,
     )
-  }, [planGenerated, holdingStates, budget, budgetCurrency, fxRate, strategy, method, cashBalances])
+  }, [planGenerated, holdingStates, budget, budgetCurrency, fxRate, strategy, method, cashBalances, minimumBuyAmounts])
 
   // ── Pre-generation advisories ────────────────────────────────────────────────
   const noPriceCount = useMemo(
@@ -467,6 +473,7 @@ export default function DCAPlanner() {
         tag: tag.trim() || undefined,
         timestamp,
       })
+      // auto-archive result is available but DCA planner doesn't show toasts — handled by OperationLogger
       setLoggedCount(entries.length)
       setSaved(true)
       setRationale(''); setTag(''); setExecutions({})

@@ -18,6 +18,7 @@ import { captureSnapshot } from '@/db/snapshotService'
 import { consumeFxLots } from '@/engine/fifo'
 import { applyCashEffect } from '@/engine/cash'
 import { updateHoldingOnBuy, updateHoldingOnSell } from '@/db/holdingService'
+import { checkAndAutoArchive } from '@/services/holdingLifecycle'
 export { InsufficientCashError } from '@/engine/cash'
 export { InsufficientSharesError } from '@/db/holdingService'
 import type {
@@ -27,6 +28,16 @@ import type {
   OperationEntry,
   OperationType,
 } from '@/types'
+
+// ─── Auto-archive result ──────────────────────────────────────────────────────
+
+/** Returned alongside the created Operation to inform the UI about lifecycle events. */
+export interface AutoArchiveEvent {
+  holdingId: string
+  ticker: string
+  wasActive: boolean
+  freedAllocationPct: number
+}
 
 // ─── Parameter types ──────────────────────────────────────────────────────────
 
@@ -85,11 +96,17 @@ async function loadAvailableLots(
  *   - InsufficientCashError    if cash balances are insufficient
  *   - InsufficientSharesError  if a SELL exceeds current holding shares
  */
+export interface TradeOperationResult {
+  operation: Operation
+  /** Holdings that were auto-archived because their shares reached 0. */
+  autoArchived: AutoArchiveEvent[]
+}
+
 export async function createTradeOperation(
   portfolioId: string,
   params: TradeOperationParams,
-): Promise<Operation> {
-  return db.transaction(
+): Promise<TradeOperationResult> {
+  const operation = await db.transaction(
     'rw',
     [
       db.portfolios,
@@ -232,6 +249,27 @@ export async function createTradeOperation(
       return operation
     },
   )
+
+  // ── Post-transaction: auto-archive holdings that reached 0 shares ──────────
+  // Must run OUTSIDE the transaction because checkAndAutoArchive opens its own.
+  const autoArchived: AutoArchiveEvent[] = []
+  const sellHoldingIds = params.entries
+    .filter(e => e.side === 'SELL')
+    .map(e => e.holdingId)
+
+  for (const holdingId of [...new Set(sellHoldingIds)]) {
+    const result = await checkAndAutoArchive(holdingId)
+    if (result.archived) {
+      autoArchived.push({
+        holdingId,
+        ticker: result.ticker,
+        wasActive: result.wasActive,
+        freedAllocationPct: result.freedAllocationPct,
+      })
+    }
+  }
+
+  return { operation, autoArchived }
 }
 
 // ─── createDCAOperation ───────────────────────────────────────────────────────
@@ -251,7 +289,7 @@ export interface DCAOperationParams {
 export async function createDCAOperation(
   portfolioId: string,
   params: DCAOperationParams,
-): Promise<Operation> {
+): Promise<TradeOperationResult> {
   return createTradeOperation(portfolioId, {
     type: 'DCA',
     entries: params.entries,
@@ -278,7 +316,7 @@ export interface TacticalRotationParams {
 export async function createTacticalRotation(
   portfolioId: string,
   params: TacticalRotationParams,
-): Promise<Operation> {
+): Promise<TradeOperationResult> {
   const sellEntry: TradeEntryInput = { ...params.sell, side: 'SELL' }
   const buyEntry:  TradeEntryInput = { ...params.buy,  side: 'BUY' }
 

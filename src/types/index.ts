@@ -35,9 +35,19 @@ export interface Portfolio {
    * startPrice and currentPrice are manually entered (no live API in MVP).
    */
   benchmarkConfig?: BenchmarkConfig
+  /**
+   * Minimum buy amount per trade in each currency.
+   * If a holding's calculated buy amount is below this threshold the trade is
+   * skipped and its budget is redistributed to the remaining eligible holdings.
+   * 0 or undefined = no minimum (disabled).
+   */
+  minimumBuyAmountUSD?: number
+  minimumBuyAmountTWD?: number
   createdAt: Date
   updatedAt: Date
 }
+
+export type HoldingStatus = 'active' | 'legacy' | 'archived'
 
 export interface Holding {
   id: string
@@ -45,9 +55,20 @@ export interface Holding {
   ticker: string
   name: string
   sleeveId: string
-  targetAllocationPct: number   // 0-100
+  targetAllocationPct: number   // 0-100; always 0 for legacy/archived
   driftThresholdPct: number     // default 2
   currency: 'USD' | 'TWD'      // denomination of the holding
+  /**
+   * Lifecycle status:
+   *   active   — invested, has target allocation, participates in DCA + drift
+   *   legacy   — still held but no longer part of strategy (庫存); excluded from DCA
+   *   archived — fully sold (shares = 0); excluded from all active views
+   *
+   * Defaults to 'active' for all existing holdings (set by DB migration).
+   */
+  status: HoldingStatus
+  /** Timestamp when status was last set to 'archived'. Used for sort/display. */
+  archivedAt?: Date
   // ── Position tracking (updated by operationService on every trade) ─────────
   currentShares?: number              // accumulated net shares
   currentPricePerShare?: number       // last manually-entered price per share

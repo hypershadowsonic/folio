@@ -827,6 +827,7 @@ export function SetupWizard() {
         targetAllocationPct: parseFloat(h.targetPct) || 0,
         driftThresholdPct: parseFloat(h.driftThresholdPct) || 2,
         currency: h.currency,
+        status: 'active' as const,
       }))
 
       const cashAccounts: CashAccount[] = [

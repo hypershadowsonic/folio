@@ -95,6 +95,11 @@ export async function captureSnapshot(portfolioId: string): Promise<PortfolioSna
   // currentShares / currentPricePerShare / averageCostBasis / averageCostBasisBase
   // are updated by updateHoldingOnBuy / updateHoldingOnSell before captureSnapshot
   // is called, so these values reflect the post-trade state correctly.
+  //
+  // Market value is captured for ALL holdings (active + legacy) to give an accurate
+  // total portfolio value. However, allocationPct and driftFromTarget are calculated
+  // using only ACTIVE holdings as the denominator — legacy holdings have no target
+  // and should not distort allocation percentages.
 
   const holdingValues = holdings.map(h => {
     const shares      = h.currentShares        ?? 0
@@ -113,14 +118,22 @@ export async function captureSnapshot(portfolioId: string): Promise<PortfolioSna
   const holdingsValueBase = holdingValues.reduce((s, v) => s + v.marketValueBase, 0)
   const totalValueBase    = holdingsValueBase + cashValueBase
 
+  // Allocation denominator: active holdings only (legacy holdings distort allocation %)
+  const activeHoldingsValueBase = holdingValues
+    .filter(v => v.h.status === 'active')
+    .reduce((s, v) => s + v.marketValueBase, 0)
+
   // ── Build HoldingSnapshot[] ────────────────────────────────────────────────
 
   const holdingSnapshots: HoldingSnapshot[] = holdingValues.map(
     ({ h, shares, price, marketValue, marketValueBase, costBasis, costBasisBase }) => {
-      const allocationPct   = holdingsValueBase > 0
-        ? (marketValueBase / holdingsValueBase) * 100
+      // Active holdings: allocation relative to active capital only
+      // Legacy/archived: allocationPct = 0, driftFromTarget = 0 (no target)
+      const isActive = h.status === 'active'
+      const allocationPct = isActive && activeHoldingsValueBase > 0
+        ? (marketValueBase / activeHoldingsValueBase) * 100
         : 0
-      const driftFromTarget = allocationPct - h.targetAllocationPct
+      const driftFromTarget = isActive ? allocationPct - h.targetAllocationPct : 0
 
       return {
         holdingId:     h.id,

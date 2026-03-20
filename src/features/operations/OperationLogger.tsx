@@ -103,12 +103,13 @@ function fmtCurrency(amount: number, currency: 'TWD' | 'USD') {
 // ─── Holding selector (reused in trade & rotation forms) ──────────────────────
 
 function HoldingSelect({
-  id, value, onValueChange, grouped, placeholder,
+  id, value, onValueChange, grouped, legacyHoldings, placeholder,
 }: {
   id: string
   value: string
   onValueChange: (v: string) => void
   grouped: ReturnType<typeof groupBySleeve>
+  legacyHoldings: Holding[]
   placeholder: string
 }) {
   return (
@@ -127,6 +128,16 @@ function HoldingSelect({
             ))}
           </SelectGroup>
         ))}
+        {legacyHoldings.length > 0 && (
+          <SelectGroup>
+            <SelectLabel className="text-amber-600 dark:text-amber-400">Legacy</SelectLabel>
+            {legacyHoldings.map(h => (
+              <SelectItem key={h.id} value={h.id} className="text-muted-foreground">
+                {h.ticker} — {h.name}
+              </SelectItem>
+            ))}
+          </SelectGroup>
+        )}
       </SelectContent>
     </Select>
   )
@@ -140,9 +151,11 @@ export function OperationLogger({ open, onOpenChange, portfolioId }: OperationLo
   const [selectedType, setSelectedType] = useState<LoggableType | null>(null)
 
   // ── Live data ────────────────────────────────────────────────────────────────
-  const holdings = useHoldings(portfolioId)
-  const sleeves  = useSleeves(portfolioId)
-  const accounts = useCashAccounts(portfolioId)
+  const allHoldings   = useHoldings(portfolioId)
+  const holdings      = useMemo(() => allHoldings.filter(h => h.status === 'active'), [allHoldings])
+  const legacyHoldings= useMemo(() => allHoldings.filter(h => h.status === 'legacy'), [allHoldings])
+  const sleeves       = useSleeves(portfolioId)
+  const accounts      = useCashAccounts(portfolioId)
 
   const prevTags = useLiveQuery(async () => {
     const ops = await db.operations.where('portfolioId').equals(portfolioId).toArray()
@@ -196,10 +209,10 @@ export function OperationLogger({ open, onOpenChange, portfolioId }: OperationLo
   const [successMsg, setSuccessMsg]       = useState<string | null>(null)
 
   // ── Derived: trade form ──────────────────────────────────────────────────────
-  const holdingMap = useMemo(() => new Map(holdings.map(h => [h.id, h])), [holdings])
-  const grouped    = useMemo(() => groupBySleeve(holdings, sleeves), [holdings, sleeves])
+  const allHoldingMap = useMemo(() => new Map([...holdings, ...legacyHoldings].map(h => [h.id, h])), [holdings, legacyHoldings])
+  const grouped       = useMemo(() => groupBySleeve(holdings, sleeves), [holdings, sleeves])
 
-  const selectedHolding  = holdingMap.get(holdingId)
+  const selectedHolding  = allHoldingMap.get(holdingId)
   const holdingCurrency  = selectedHolding?.currency ?? 'USD'
   const parsedShares     = parseFloat(shares) || 0
   const parsedPrice      = parseFloat(price) || 0
@@ -210,8 +223,8 @@ export function OperationLogger({ open, onOpenChange, portfolioId }: OperationLo
   const insufficientCash = isBuy && subtotal > 0 && subtotal > cashBalance
 
   // ── Derived: rotation form ───────────────────────────────────────────────────
-  const sellH        = holdingMap.get(sellHoldingId)
-  const buyH         = holdingMap.get(buyHoldingId)
+  const sellH        = allHoldingMap.get(sellHoldingId)
+  const buyH         = allHoldingMap.get(buyHoldingId)
   const rotSellNet   = (parseFloat(sellShares)||0) * (parseFloat(sellPrice)||0) - (parseFloat(sellFees)||0)
   const rotBuyCost   = (parseFloat(buyShares)||0)  * (parseFloat(buyPrice)||0)  + (parseFloat(buyFees)||0)
   const rotNetCash   = rotSellNet - rotBuyCost
@@ -284,7 +297,7 @@ export function OperationLogger({ open, onOpenChange, portfolioId }: OperationLo
     const timestamp = getTimestamp(); if (!timestamp) return
     setSaving(true); setError(null)
     try {
-      await createTradeOperation(portfolioId, {
+      const { autoArchived } = await createTradeOperation(portfolioId, {
         type: selectedType as OperationType,
         entries: [{
           holdingId,
@@ -297,7 +310,15 @@ export function OperationLogger({ open, onOpenChange, portfolioId }: OperationLo
         tag: tag.trim() || undefined,
         timestamp,
       })
-      onSuccess('Operation logged.')
+      if (autoArchived.length > 0) {
+        const ev = autoArchived[0]
+        const msg = ev.wasActive
+          ? `${ev.ticker} archived — redistribute its ${ev.freedAllocationPct.toFixed(1)}% target in Settings.`
+          : `${ev.ticker} archived (0 shares remaining).`
+        onSuccess(msg)
+      } else {
+        onSuccess('Operation logged.')
+      }
     } catch (err) { onError(err) }
   }
 
@@ -314,14 +335,22 @@ export function OperationLogger({ open, onOpenChange, portfolioId }: OperationLo
     const timestamp = getTimestamp(); if (!timestamp) return
     setSaving(true); setError(null)
     try {
-      await createTacticalRotation(portfolioId, {
+      const { autoArchived } = await createTacticalRotation(portfolioId, {
         sell: { holdingId: sellHoldingId, side: 'SELL', shares: pSellShares, pricePerShare: pSellPrice, fees: parseFloat(sellFees)||0 },
         buy:  { holdingId: buyHoldingId,  side: 'BUY',  shares: pBuyShares,  pricePerShare: pBuyPrice,  fees: parseFloat(buyFees)||0  },
         rationale: rotRationale.trim(),
         tag: rotTag.trim() || undefined,
         timestamp,
       })
-      onSuccess('Rotation logged.')
+      if (autoArchived.length > 0) {
+        const ev = autoArchived[0]
+        const msg = ev.wasActive
+          ? `${ev.ticker} archived — redistribute its ${ev.freedAllocationPct.toFixed(1)}% target in Settings.`
+          : `${ev.ticker} archived (0 shares remaining).`
+        onSuccess(msg)
+      } else {
+        onSuccess('Rotation logged.')
+      }
     } catch (err) { onError(err) }
   }
 
@@ -483,6 +512,7 @@ export function OperationLogger({ open, onOpenChange, portfolioId }: OperationLo
                     value={holdingId}
                     onValueChange={setHoldingId}
                     grouped={grouped}
+                    legacyHoldings={legacyHoldings}
                     placeholder="Select a holding…"
                   />
                 </div>
@@ -594,6 +624,7 @@ export function OperationLogger({ open, onOpenChange, portfolioId }: OperationLo
                       value={sellHoldingId}
                       onValueChange={setSellHoldingId}
                       grouped={grouped}
+                      legacyHoldings={legacyHoldings}
                       placeholder="Select holding…"
                     />
                   </div>
@@ -634,6 +665,7 @@ export function OperationLogger({ open, onOpenChange, portfolioId }: OperationLo
                       value={buyHoldingId}
                       onValueChange={setBuyHoldingId}
                       grouped={grouped}
+                      legacyHoldings={legacyHoldings}
                       placeholder="Select holding…"
                     />
                   </div>

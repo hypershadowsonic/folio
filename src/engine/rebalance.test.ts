@@ -632,27 +632,27 @@ describe('calculateCurrentAllocations', () => {
     {
       id: 'voo', portfolioId: 'p1', ticker: 'VOO', name: 'Vanguard S&P 500',
       sleeveId: 's1', targetAllocationPct: 40, driftThresholdPct: 2,
-      currency: 'USD', currentShares: 21.875, currentPricePerShare: 500,
+      currency: 'USD', currentShares: 21.875, currentPricePerShare: 500, status: 'active',
     },
     {
       id: 'vht', portfolioId: 'p1', ticker: 'VHT', name: 'Vanguard Healthcare',
       sleeveId: 's1', targetAllocationPct: 20, driftThresholdPct: 2,
-      currency: 'USD', currentShares: 200_000 / FX / 300, currentPricePerShare: 300,
+      currency: 'USD', currentShares: 200_000 / FX / 300, currentPricePerShare: 300, status: 'active',
     },
     {
       id: 'smh', portfolioId: 'p1', ticker: 'SMH', name: 'Semiconductor ETF',
       sleeveId: 's1', targetAllocationPct: 15, driftThresholdPct: 2,
-      currency: 'USD', currentShares: 15, currentPricePerShare: 250,
+      currency: 'USD', currentShares: 15, currentPricePerShare: 250, status: 'active',
     },
     {
       id: '0050', portfolioId: 'p1', ticker: '0050', name: 'Taiwan 50',
       sleeveId: 's1', targetAllocationPct: 10, driftThresholdPct: 2,
-      currency: 'TWD', currentShares: 100_000 / 180, currentPricePerShare: 180,
+      currency: 'TWD', currentShares: 100_000 / 180, currentPricePerShare: 180, status: 'active',
     },
     {
       id: 'gldm', portfolioId: 'p1', ticker: 'GLDM', name: 'Gold ETF',
       sleeveId: 's1', targetAllocationPct: 15, driftThresholdPct: 2,
-      currency: 'USD', currentShares: 143.75, currentPricePerShare: 50,
+      currency: 'USD', currentShares: 143.75, currentPricePerShare: 50, status: 'active',
     },
   ]
 

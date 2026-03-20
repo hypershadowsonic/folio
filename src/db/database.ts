@@ -73,6 +73,34 @@ export class FolioDB extends Dexie {
       // Stand-alone periodic snapshots; query by portfolio + time
       snapshots: 'id, portfolioId, timestamp, [portfolioId+timestamp]',
     })
+
+    /**
+     * Version 2 — holding lifecycle (status field).
+     *
+     * Adds `status` index to holdings table for efficient filtering.
+     * Migration sets status = 'active' for all existing holdings.
+     *
+     * Table schema changes: holdings gains `status` and `[portfolioId+status]` index.
+     * All other tables are re-declared unchanged (required by Dexie when any table changes).
+     */
+    this.version(2).stores({
+      portfolios: 'id, createdAt',
+      holdings: 'id, portfolioId, sleeveId, ticker, status, [portfolioId+status]',
+      sleeves: 'id, portfolioId',
+      cashAccounts: 'id, portfolioId, currency, [portfolioId+currency]',
+      fxTransactions: 'id, portfolioId, timestamp',
+      fxLots: 'id, fxTransactionId, timestamp, [fxTransactionId+timestamp]',
+      operations: 'id, portfolioId, timestamp, type, tag, [portfolioId+timestamp], [portfolioId+type]',
+      ammunitionPools: 'portfolioId',
+      snapshots: 'id, portfolioId, timestamp, [portfolioId+timestamp]',
+    }).upgrade(async tx => {
+      // Set status = 'active' on all existing holdings that don't have a status yet
+      await tx.table('holdings').toCollection().modify((holding: Record<string, unknown>) => {
+        if (!holding['status']) {
+          holding['status'] = 'active'
+        }
+      })
+    })
   }
 }
 

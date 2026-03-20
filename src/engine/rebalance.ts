@@ -30,6 +30,15 @@ import type { Holding } from '@/types'
 /** Holdings producing fewer than this many shares are treated as dust and HOLDed. */
 export const DUST_SHARES = 0.0001
 
+// ─── Minimum buy amounts ───────────────────────────────────────────────────────
+
+export interface MinimumBuyAmounts {
+  /** Minimum USD amount per BUY trade. 0 = disabled. */
+  usd: number
+  /** Minimum TWD amount per BUY trade. 0 = disabled. */
+  twd: number
+}
+
 // ─── Domain types ─────────────────────────────────────────────────────────────
 
 export interface HoldingState {
@@ -164,11 +173,77 @@ function computeWeights(
   return weights
 }
 
+/**
+ * Iteratively removes holdings whose allocated budget would be below the minimum
+ * buy amount. Each removal redistributes the budget to the remaining eligible
+ * holdings via the same weighting method.
+ *
+ * Edge case: if ALL eligible holdings are below minimum, the filter is skipped
+ * entirely and a warning is added so the plan still runs.
+ */
+function filterBelowMinimum(
+  eligible: HoldingState[],
+  budgetBase: number,
+  allocationMethod: 'proportional-to-drift' | 'equal-weight',
+  minimumBuyAmounts: MinimumBuyAmounts,
+  fxRate: number,
+): { finalEligible: HoldingState[]; excluded: HoldingState[]; warnings: string[] } {
+  const noMinimum = minimumBuyAmounts.usd <= 0 && minimumBuyAmounts.twd <= 0
+  if (noMinimum || eligible.length === 0 || budgetBase <= 0) {
+    return { finalEligible: eligible, excluded: [], warnings: [] }
+  }
+
+  const originalEligible = eligible
+  let current = [...eligible]
+  const excluded: HoldingState[] = []
+  const warnings: string[] = []
+
+  while (current.length > 0) {
+    const weights = computeWeights(current, allocationMethod)
+    const belowMin: HoldingState[] = []
+
+    for (const h of current) {
+      const allocBase   = (weights.get(h.holdingId) ?? 0) * budgetBase
+      const allocAmount = fromBase(allocBase, h.currency, fxRate)
+      const minAmount   = h.currency === 'USD' ? minimumBuyAmounts.usd : minimumBuyAmounts.twd
+      if (minAmount > 0 && allocAmount < minAmount) {
+        belowMin.push(h)
+      }
+    }
+
+    if (belowMin.length === 0) break
+
+    for (const h of belowMin) {
+      const minAmount = h.currency === 'USD' ? minimumBuyAmounts.usd : minimumBuyAmounts.twd
+      excluded.push(h)
+      warnings.push(
+        `${h.ticker}: skipped — allocated amount below ${minAmount} ${h.currency} minimum`,
+      )
+    }
+    current = current.filter(h => !belowMin.some(b => b.holdingId === h.holdingId))
+  }
+
+  // If filtering removed everything, revert and warn so budget isn't silently lost
+  if (current.length === 0) {
+    warnings.length = 0  // clear per-holding warnings; replace with single summary
+    warnings.push(
+      'All eligible holdings are below the minimum buy amount — minimum filter bypassed',
+    )
+    return { finalEligible: originalEligible, excluded: [], warnings }
+  }
+
+  return { finalEligible: current, excluded, warnings }
+}
+
 // ─── calculateCurrentAllocations ──────────────────────────────────────────────
 
 /**
  * Build a HoldingState[] from raw Holding records, enriched with allocation
  * percentages and drift. Sorted ascending by drift (most underweight first).
+ *
+ * IMPORTANT: Only pass ACTIVE holdings. Legacy and archived holdings must be
+ * filtered out by the caller (e.g. holdings.filter(h => h.status === 'active')).
+ * The allocation denominator must reflect only active invested capital.
  *
  * Holdings with no price (currentPricePerShare = 0 or undefined) are included
  * in the output — callers must check currentPricePerShare > 0 before trading.
@@ -228,6 +303,7 @@ export function generateSoftRebalancePlan(
   fxRate: number,
   allocationMethod: 'proportional-to-drift' | 'equal-weight',
   cashBalances: { twd: number; usd: number },
+  minimumBuyAmounts?: MinimumBuyAmounts,
 ): RebalancePlanResult {
   const budgetBase = toBase(budget, budgetCurrency, fxRate)
 
@@ -242,11 +318,18 @@ export function generateSoftRebalancePlan(
     ? underweight
     : holdings.filter(h => h.drift <= 0)
 
+  // Filter out holdings whose allocated amount would be below the minimum buy threshold.
+  // Excluded holdings' budgets are redistributed to the remaining eligible set.
+  const minAmounts = minimumBuyAmounts ?? { usd: 0, twd: 0 }
+  const { finalEligible, excluded, warnings: minWarnings } =
+    filterBelowMinimum(eligible, budgetBase, allocationMethod, minAmounts, fxRate)
+  const excludedSet = new Set(excluded.map(h => h.holdingId))
+
   // Allocate budget (in TWD base) across eligible holdings
   const allocatedBase = new Map<string, number>()
-  if (eligible.length > 0 && budget > 0) {
-    const weights = computeWeights(eligible, allocationMethod)
-    for (const h of eligible) {
+  if (finalEligible.length > 0 && budget > 0) {
+    const weights = computeWeights(finalEligible, allocationMethod)
+    for (const h of finalEligible) {
       allocatedBase.set(h.holdingId, (weights.get(h.holdingId) ?? 0) * budgetBase)
     }
   }
@@ -254,7 +337,7 @@ export function generateSoftRebalancePlan(
   // Build trade plans
   const deltas  = new Map<string, number>()
   const buyCost = { usd: 0, twd: 0 }
-  const warnings: string[] = []
+  const warnings: string[] = [...minWarnings]
 
   let noPriceBuyCount = 0
   let dustCount = 0
@@ -317,7 +400,9 @@ export function generateSoftRebalancePlan(
         projectedAllocationPct: 0,
         reason: h.drift > 0
           ? `Overweight by ${h.drift.toFixed(1)}% — no action (soft strategy)`
-          : 'At target',
+          : excludedSet.has(h.holdingId)
+            ? 'Below minimum buy amount — budget redistributed to other holdings'
+            : 'At target',
       } satisfies TradePlan
     }
 
@@ -412,6 +497,7 @@ export function generateHardRebalancePlan(
   fxRate: number,
   allocationMethod: 'proportional-to-drift' | 'equal-weight',
   cashBalances: { twd: number; usd: number },
+  minimumBuyAmounts?: MinimumBuyAmounts,
 ): RebalancePlanResult {
   // Holdings-only base (cash excluded) — allocation % is about invested capital
   const currentPortfolioBase = holdings.reduce((s, h) => s + h.marketValueBase, 0)
@@ -464,10 +550,16 @@ export function generateHardRebalancePlan(
   const buyableBase = toBase(sellProceeds.usd, 'USD', fxRate)
     + sellProceeds.twd + budgetBase
 
+  // Filter out holdings whose allocated amount would be below the minimum buy threshold.
+  const minAmounts = minimumBuyAmounts ?? { usd: 0, twd: 0 }
+  const { finalEligible: finalEligibleP, excluded: excludedP, warnings: minWarningsP } =
+    filterBelowMinimum(eligibleP, buyableBase, allocationMethod, minAmounts, fxRate)
+  const excludedSet = new Set(excludedP.map(h => h.holdingId))
+
   const allocatedBase = new Map<string, number>()
-  if (eligibleP.length > 0 && buyableBase > 0) {
-    const weights = computeWeights(eligibleP, allocationMethod)
-    for (const h of eligibleP) {
+  if (finalEligibleP.length > 0 && buyableBase > 0) {
+    const weights = computeWeights(finalEligibleP, allocationMethod)
+    for (const h of finalEligibleP) {
       allocatedBase.set(h.holdingId, (weights.get(h.holdingId) ?? 0) * buyableBase)
     }
   }
@@ -476,7 +568,7 @@ export function generateHardRebalancePlan(
 
   const deltas  = new Map<string, number>()
   const buyCost = { usd: 0, twd: 0 }
-  const warnings: string[] = []
+  const warnings: string[] = [...minWarningsP]
 
   let noPriceBuyCount = 0
   let dustCount = 0
@@ -582,7 +674,11 @@ export function generateHardRebalancePlan(
       currentAllocationPct:   h.currentAllocationPct,
       targetAllocationPct:    h.targetAllocationPct,
       projectedAllocationPct: 0,
-      reason: h.drift > 0 ? `Overweight by ${h.drift.toFixed(1)}% — trim to target` : 'At target',
+      reason: h.drift > 0
+        ? `Overweight by ${h.drift.toFixed(1)}% — trim to target`
+        : excludedSet.has(h.holdingId)
+          ? 'Below minimum buy amount — budget redistributed to other holdings'
+          : 'At target',
     } satisfies TradePlan
   })
 
@@ -656,8 +752,9 @@ export function generateRebalancePlan(
   strategy: 'soft' | 'hard',
   allocationMethod: 'proportional-to-drift' | 'equal-weight',
   cashBalances: { twd: number; usd: number },
+  minimumBuyAmounts?: MinimumBuyAmounts,
 ): RebalancePlanResult {
   return strategy === 'soft'
-    ? generateSoftRebalancePlan(holdings, budget, budgetCurrency, fxRate, allocationMethod, cashBalances)
-    : generateHardRebalancePlan(holdings, budget, budgetCurrency, fxRate, allocationMethod, cashBalances)
+    ? generateSoftRebalancePlan(holdings, budget, budgetCurrency, fxRate, allocationMethod, cashBalances, minimumBuyAmounts)
+    : generateHardRebalancePlan(holdings, budget, budgetCurrency, fxRate, allocationMethod, cashBalances, minimumBuyAmounts)
 }

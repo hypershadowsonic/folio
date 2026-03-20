@@ -25,6 +25,7 @@ export function usePortfolio() {
 
 /**
  * Returns all holdings for a portfolio, ordered by ticker for stable display.
+ * Includes active, legacy, and archived holdings.
  */
 export function useHoldings(portfolioId: string | undefined) {
   return useLiveQuery(
@@ -33,6 +34,65 @@ export function useHoldings(portfolioId: string | undefined) {
       return db.holdings
         .where('portfolioId').equals(portfolioId)
         .sortBy('ticker')
+    },
+    [portfolioId],
+    [],
+  )
+}
+
+/**
+ * Returns only active holdings (status === 'active') for a portfolio.
+ * Use this for DCA planning, drift monitoring, and allocation calculations.
+ */
+export function useActiveHoldings(portfolioId: string | undefined) {
+  return useLiveQuery(
+    () => {
+      if (!portfolioId) return []
+      return db.holdings
+        .where('[portfolioId+status]')
+        .equals([portfolioId, 'active'])
+        .sortBy('ticker')
+    },
+    [portfolioId],
+    [],
+  )
+}
+
+/**
+ * Returns only legacy holdings (status === 'legacy') for a portfolio.
+ */
+export function useLegacyHoldings(portfolioId: string | undefined) {
+  return useLiveQuery(
+    () => {
+      if (!portfolioId) return []
+      return db.holdings
+        .where('[portfolioId+status]')
+        .equals([portfolioId, 'legacy'])
+        .sortBy('ticker')
+    },
+    [portfolioId],
+    [],
+  )
+}
+
+/**
+ * Returns only archived holdings (status === 'archived') for a portfolio,
+ * sorted by archivedAt descending (most recently archived first).
+ */
+export function useArchivedHoldings(portfolioId: string | undefined) {
+  return useLiveQuery(
+    async () => {
+      if (!portfolioId) return []
+      const holdings = await db.holdings
+        .where('[portfolioId+status]')
+        .equals([portfolioId, 'archived'])
+        .toArray()
+      // Sort by archivedAt descending (most recently archived first)
+      return holdings.sort((a, b) => {
+        const aTime = a.archivedAt?.getTime() ?? 0
+        const bTime = b.archivedAt?.getTime() ?? 0
+        return bTime - aTime
+      })
     },
     [portfolioId],
     [],
