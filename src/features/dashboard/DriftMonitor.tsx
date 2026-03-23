@@ -68,7 +68,7 @@ export function useDriftSummary(
 
     const [portfolio, holdings, sleeves] = await Promise.all([
       db.portfolios.get(portfolioId),
-      db.holdings.where('portfolioId').equals(portfolioId).sortBy('ticker'),
+      db.holdings.where('[portfolioId+status]').equals([portfolioId, 'active']).sortBy('ticker'),
       db.sleeves.where('portfolioId').equals(portfolioId).toArray(),
     ])
 
@@ -112,15 +112,17 @@ export function useDriftSummary(
       holdingsBase += h.currency === 'USD' ? mv * fxRate : mv
     }
     // Allocation bars use holdings-only denominator (same rule as calculateCurrentAllocations)
-    const sleeveAllocs: SleeveAllocRow[] = sleeves.map(sleeve => {
-      const sleeveHoldings = holdings.filter(h => h.sleeveId === sleeve.id)
-      const actualPct = sleeveHoldings.reduce((sum, h) => {
-        const mv = (h.currentShares ?? 0) * (h.currentPricePerShare ?? 0)
-        const mvBase = h.currency === 'USD' ? mv * fxRate : mv
-        return sum + (holdingsBase > 0 ? (mvBase / holdingsBase) * 100 : 0)
-      }, 0)
-      return { sleeve, actualPct, targetPct: sleeve.targetAllocationPct }
-    })
+    const sleeveAllocs: SleeveAllocRow[] = sleeves
+      .map(sleeve => {
+        const sleeveHoldings = holdings.filter(h => h.sleeveId === sleeve.id)
+        const actualPct = sleeveHoldings.reduce((sum, h) => {
+          const mv = (h.currentShares ?? 0) * (h.currentPricePerShare ?? 0)
+          const mvBase = h.currency === 'USD' ? mv * fxRate : mv
+          return sum + (holdingsBase > 0 ? (mvBase / holdingsBase) * 100 : 0)
+        }, 0)
+        return { sleeve, actualPct, targetPct: sleeve.targetAllocationPct }
+      })
+      .filter(row => row.targetPct > 0 || row.actualPct > 0)
 
     return { summary, sleeveAllocs }
   }, [portfolioId])

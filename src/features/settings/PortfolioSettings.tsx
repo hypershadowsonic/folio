@@ -98,6 +98,145 @@ function SaveIndicator({ status }: { status: SaveStatus }) {
 
 // ─── Section wrapper ──────────────────────────────────────────────────────────
 
+// ─── DebugSection ─────────────────────────────────────────────────────────────
+
+type DebugAction = 'operations' | 'snapshots' | 'full-reset'
+
+function DebugSection({ portfolioId }: { portfolioId: string }) {
+  const [confirming, setConfirming] = useState<DebugAction | null>(null)
+  const [running, setRunning]       = useState(false)
+  const [done, setDone]             = useState<DebugAction | null>(null)
+
+  async function run(action: DebugAction) {
+    setRunning(true)
+    try {
+      if (action === 'operations') {
+        await db.transaction('rw', [
+          db.operations, db.fxTransactions, db.fxLots, db.holdings, db.cashAccounts,
+        ], async () => {
+          await db.operations.where('portfolioId').equals(portfolioId).delete()
+          const txIds = await db.fxTransactions
+            .where('portfolioId').equals(portfolioId).primaryKeys() as string[]
+          if (txIds.length) await db.fxLots.where('fxTransactionId').anyOf(txIds).delete()
+          await db.fxTransactions.where('portfolioId').equals(portfolioId).delete()
+          await db.holdings.where('portfolioId').equals(portfolioId).modify({
+            currentShares: 0, currentPricePerShare: 0,
+            averageCostBasis: 0, averageCostBasisBase: 0,
+          })
+          await db.cashAccounts.where('portfolioId').equals(portfolioId).modify({ balance: 0 })
+        })
+      } else if (action === 'snapshots') {
+        await db.snapshots.where('portfolioId').equals(portfolioId).delete()
+      } else {
+        // full-reset: clear all transactional data, keep portfolio/sleeves/holdings definitions
+        await db.transaction('rw', [
+          db.operations, db.fxTransactions, db.fxLots,
+          db.holdings, db.cashAccounts, db.snapshots, db.ammunitionPools,
+        ], async () => {
+          await db.operations.where('portfolioId').equals(portfolioId).delete()
+          const txIds = await db.fxTransactions
+            .where('portfolioId').equals(portfolioId).primaryKeys() as string[]
+          if (txIds.length) await db.fxLots.where('fxTransactionId').anyOf(txIds).delete()
+          await db.fxTransactions.where('portfolioId').equals(portfolioId).delete()
+          await db.snapshots.where('portfolioId').equals(portfolioId).delete()
+          await db.ammunitionPools.where('portfolioId').equals(portfolioId).delete()
+          await db.holdings.where('portfolioId').equals(portfolioId).modify({
+            currentShares: 0, currentPricePerShare: 0,
+            averageCostBasis: 0, averageCostBasisBase: 0,
+            status: 'active', archivedAt: undefined,
+          })
+          await db.cashAccounts.where('portfolioId').equals(portfolioId).modify({ balance: 0 })
+        })
+      }
+      setDone(action)
+      setTimeout(() => setDone(null), 3000)
+    } finally {
+      setRunning(false)
+      setConfirming(null)
+    }
+  }
+
+  const ACTIONS: { id: DebugAction; label: string; detail: string }[] = [
+    {
+      id: 'operations',
+      label: 'Clear all operations',
+      detail: 'Deletes all operations, FX transactions, and FX lots. Resets all holding positions and cash balances to 0. Holdings and sleeves are kept.',
+    },
+    {
+      id: 'snapshots',
+      label: 'Clear all snapshots',
+      detail: 'Deletes all portfolio snapshots. The chart will be empty until a new snapshot is captured.',
+    },
+    {
+      id: 'full-reset',
+      label: 'Full reset',
+      detail: 'Clears all operations, FX data, snapshots, and ammunition pool. Resets all positions and cash to 0. Portfolio, sleeves, and holding definitions are preserved.',
+    },
+  ]
+
+  return (
+    <SettingsSection
+      title="Debug"
+      description="Destructive utilities for testing. Cannot be undone."
+    >
+      <div className="space-y-3">
+        {ACTIONS.map(({ id, label, detail }) => (
+          <div
+            key={id}
+            className={cn(
+              'rounded-lg border p-3 space-y-2 transition-colors',
+              confirming === id ? 'border-destructive/50 bg-destructive/5' : 'border-border',
+            )}
+          >
+            <div className="flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-sm font-medium">{label}</p>
+                <p className="text-xs text-muted-foreground mt-0.5 leading-relaxed">{detail}</p>
+              </div>
+              {confirming !== id && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-xs shrink-0 text-destructive border-destructive/40 hover:bg-destructive/10"
+                  onClick={() => setConfirming(id)}
+                >
+                  <Trash2 className="h-3 w-3 mr-1" />
+                  {done === id ? <><Check className="h-3 w-3 mr-1" />Done</> : 'Clear'}
+                </Button>
+              )}
+            </div>
+            {confirming === id && (
+              <div className="flex items-center gap-2 pt-1">
+                <AlertTriangle className="h-3.5 w-3.5 text-destructive shrink-0" />
+                <p className="text-xs text-destructive flex-1">This cannot be undone.</p>
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  className="h-7 text-xs"
+                  disabled={running}
+                  onClick={() => run(id)}
+                >
+                  {running && <Loader2 className="h-3 w-3 animate-spin mr-1" />}
+                  Confirm
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 text-xs"
+                  disabled={running}
+                  onClick={() => setConfirming(null)}
+                >
+                  Cancel
+                </Button>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </SettingsSection>
+  )
+}
+
 // ─── DataSection ──────────────────────────────────────────────────────────────
 
 function DataSection({ portfolioId }: { portfolioId: string }) {
@@ -1149,6 +1288,8 @@ export function PortfolioSettings({ portfolioId }: { portfolioId: string }) {
       >
         <IBKRImport portfolioId={portfolioId} />
       </SettingsSection>
+
+      <DebugSection portfolioId={portfolioId} />
 
     </div>
   )
