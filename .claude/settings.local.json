@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:api.cnyes.com)",
+      "WebFetch(domain:fund.cnyes.com)",
+      "WebSearch",
+      "WebFetch(domain:openapi.api.cnyes.com)",
+      "WebFetch(domain:openapi.twse.com.tw)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:chart.cnyes.com)",
+      "WebFetch(domain:asset.cnyes.cool)",
+      "WebFetch(domain:www.sitca.org.tw)",
+      "WebFetch(domain:fund.moneydj.com)",
+      "WebFetch(domain:www.fundclear.com.tw)",
+      "WebFetch(domain:www.twse.com.tw)",
+      "WebFetch(domain:announce.fundclear.com.tw)",
+      "WebFetch(domain:data.gov.tw)",
+      "WebFetch(domain:api.fundclear.com.tw)"
+    ]
+  }
+}
