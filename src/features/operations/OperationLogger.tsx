@@ -9,7 +9,7 @@
  * built-in close button that the shadcn DialogContent wrapper includes.
  */
 
-import { useState, useMemo, useEffect } from 'react'
+import { useState, useMemo, useEffect, useCallback } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import * as DialogPrimitive from '@radix-ui/react-dialog'
 import {
@@ -38,6 +38,7 @@ import {
 } from '@/db/cashFxService'
 import { InsufficientFxLotsError } from '@/engine/fifo'
 import type { Holding, OperationType, Sleeve } from '@/types'
+import { getLatestCachedPrice } from '@/services/yahooFinance'
 
 // ─── Operation type config ────────────────────────────────────────────────────
 
@@ -211,6 +212,31 @@ export function OperationLogger({ open, onOpenChange, portfolioId }: OperationLo
   // ── Derived: trade form ──────────────────────────────────────────────────────
   const allHoldingMap = useMemo(() => new Map([...holdings, ...legacyHoldings].map(h => [h.id, h])), [holdings, legacyHoldings])
   const grouped       = useMemo(() => groupBySleeve(holdings, sleeves), [holdings, sleeves])
+
+  // Auto-fill price from cache when a holding is selected
+  const handleHoldingSelect = useCallback(async (id: string) => {
+    setHoldingId(id)
+    const h = allHoldingMap.get(id)
+    if (!h) return
+    const cached = await getLatestCachedPrice(h.ticker)
+    if (cached !== null) setPrice(cached.toFixed(2))
+  }, [allHoldingMap])
+
+  const handleSellHoldingSelect = useCallback(async (id: string) => {
+    setSellHoldingId(id)
+    const h = allHoldingMap.get(id)
+    if (!h) return
+    const cached = await getLatestCachedPrice(h.ticker)
+    if (cached !== null) setSellPrice(cached.toFixed(2))
+  }, [allHoldingMap])
+
+  const handleBuyHoldingSelect = useCallback(async (id: string) => {
+    setBuyHoldingId(id)
+    const h = allHoldingMap.get(id)
+    if (!h) return
+    const cached = await getLatestCachedPrice(h.ticker)
+    if (cached !== null) setBuyPrice(cached.toFixed(2))
+  }, [allHoldingMap])
 
   const selectedHolding  = allHoldingMap.get(holdingId)
   const holdingCurrency  = selectedHolding?.currency ?? 'USD'
@@ -510,7 +536,7 @@ export function OperationLogger({ open, onOpenChange, portfolioId }: OperationLo
                   <HoldingSelect
                     id="op-holding"
                     value={holdingId}
-                    onValueChange={setHoldingId}
+                    onValueChange={(id) => void handleHoldingSelect(id)}
                     grouped={grouped}
                     legacyHoldings={legacyHoldings}
                     placeholder="Select a holding…"
@@ -622,7 +648,7 @@ export function OperationLogger({ open, onOpenChange, portfolioId }: OperationLo
                     <HoldingSelect
                       id="rot-sell-holding"
                       value={sellHoldingId}
-                      onValueChange={setSellHoldingId}
+                      onValueChange={(id) => void handleSellHoldingSelect(id)}
                       grouped={grouped}
                       legacyHoldings={legacyHoldings}
                       placeholder="Select holding…"
@@ -663,7 +689,7 @@ export function OperationLogger({ open, onOpenChange, portfolioId }: OperationLo
                     <HoldingSelect
                       id="rot-buy-holding"
                       value={buyHoldingId}
-                      onValueChange={setBuyHoldingId}
+                      onValueChange={(id) => void handleBuyHoldingSelect(id)}
                       grouped={grouped}
                       legacyHoldings={legacyHoldings}
                       placeholder="Select holding…"

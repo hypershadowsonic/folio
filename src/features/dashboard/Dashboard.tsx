@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useCallback } from 'react'
 import Dexie from 'dexie'
 import { useLiveQuery } from 'dexie-react-hooks'
 import {
@@ -9,9 +9,10 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from 'recharts'
-import { TrendingUp, TrendingDown, ArrowRight, RefreshCw, ChevronDown, ChevronRight, Package } from 'lucide-react'
+import { TrendingUp, TrendingDown, ArrowRight, RefreshCw, ChevronDown, ChevronRight, Package, SlidersHorizontal } from 'lucide-react'
 import { usePortfolioStore } from '@/stores/portfolioStore'
 import { useUIStore, type DisplayCurrency } from '@/stores/uiStore'
+import { refreshAllPrices } from '@/services/yahooFinance'
 import { useCashAccounts, useHoldings, useLegacyHoldings } from '@/db/hooks'
 import type { Holding } from '@/types'
 import { DriftMonitor } from './DriftMonitor'
@@ -221,6 +222,18 @@ export default function Dashboard() {
   const [range, setRange]           = useState<Range>('1Y')
   const [priceOpen, setPriceOpen]   = useState(false)
   const [bmUpdatedTicker, setBmUpdatedTicker] = useState<string | null>(null)
+  const [isRefreshing, setIsRefreshing] = useState(false)
+  const apiStatus = useUIStore((s) => s.apiStatus)
+
+  const handleRefreshPrices = useCallback(async () => {
+    if (!portfolioId || !holdings || isRefreshing) return
+    setIsRefreshing(true)
+    try {
+      await refreshAllPrices(holdings, portfolioId)
+    } finally {
+      setIsRefreshing(false)
+    }
+  }, [portfolioId, holdings, isRefreshing])
 
   // All operations newest-first
   const allOps =
@@ -354,18 +367,40 @@ export default function Dashboard() {
           <p className="text-xs text-muted-foreground mt-0.5">Dashboard</p>
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          <Button
-            variant="outline"
-            size="sm"
-            className="h-8 gap-1.5"
-            onClick={() => setPriceOpen(true)}
-          >
-            <RefreshCw className="h-3.5 w-3.5" />
-            <span className="text-xs">Prices</span>
-          </Button>
+          <div className="flex items-center gap-1">
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 gap-1.5"
+              disabled={isRefreshing}
+              onClick={() => void handleRefreshPrices()}
+            >
+              <RefreshCw className={cn('h-3.5 w-3.5', isRefreshing && 'animate-spin')} />
+              <span className="text-xs">{isRefreshing ? 'Updating…' : 'Refresh Prices'}</span>
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8"
+              title="Manual price entry"
+              onClick={() => setPriceOpen(true)}
+            >
+              <SlidersHorizontal className="h-3.5 w-3.5" />
+              <span className="sr-only">Manual price entry</span>
+            </Button>
+          </div>
           <CurrencyToggle value={currency} onChange={setCurrency} />
         </div>
       </div>
+
+      {/* ── API status banner ───────────────────────────────────────────────── */}
+      {apiStatus !== 'online' && (
+        <p className="text-xs text-muted-foreground text-center">
+          {apiStatus === 'offline-cached'
+            ? 'Offline — showing cached prices'
+            : 'Offline — no cached prices available'}
+        </p>
+      )}
 
       {/* ── Hero Chart ───────────────────────────────────────────────────────── */}
       <div className="rounded-xl border border-border bg-card p-4">

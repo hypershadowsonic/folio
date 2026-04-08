@@ -462,7 +462,7 @@ export default function DCAPlanner() {
       return
     }
 
-    const opType: OperationType = strategy === 'hard' ? 'REBALANCE' : 'DCA'
+    const opType: OperationType = strategy === 'hard' ? 'REBALANCE' : 'DCA'  // 'soft' and 'none' both log as DCA
 
     setSaving(true); setSaveError(null)
     try {
@@ -574,6 +574,12 @@ export default function DCAPlanner() {
                 onSelect={() => handleStrategyChange('hard')}
                 label="Hard Rebalance (sell + buy)"
                 subtitle="Sell overweight, buy underweight. Minimizes drift."
+              />
+              <RadioCard
+                selected={strategy === 'none'}
+                onSelect={() => handleStrategyChange('none')}
+                label="No Rebalancing"
+                subtitle="Buy proportional to target allocation. Ignore drift."
               />
             </div>
           </SectionCard>

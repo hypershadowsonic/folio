@@ -741,19 +741,125 @@ function projectAllocationsWithTotal(
   return result
 }
 
+// ─── generateNoRebalancePlan ──────────────────────────────────────────────────
+
+/**
+ * No rebalance: buy proportional to target allocation. No drift correction, no sells.
+ * Each holding receives budget × (targetAllocationPct / 100), regardless of current drift.
+ * Holdings with no price or dust amounts are HOLDed.
+ */
+export function generateNoRebalancePlan(
+  holdings: HoldingState[],
+  budget: number,
+  budgetCurrency: 'USD' | 'TWD',
+  fxRate: number,
+  cashBalances: { twd: number; usd: number },
+  minimumBuyAmounts?: MinimumBuyAmounts,
+): RebalancePlanResult {
+  const budgetBase = toBase(budget, budgetCurrency, fxRate)
+  const currentBase = holdings.reduce((s, h) => s + h.marketValueBase, 0)
+  const projectedPortfolioBase = currentBase + budgetBase
+  const totalTarget = holdings.reduce((s, h) => s + h.targetAllocationPct, 0)
+  const minAmounts = minimumBuyAmounts ?? { usd: 0, twd: 0 }
+
+  const deltas  = new Map<string, number>()
+  const buyCost = { usd: 0, twd: 0 }
+  const warnings: string[] = []
+
+  const trades: TradePlan[] = holdings.map(h => {
+    if (h.currentPricePerShare <= 0) {
+      return {
+        holdingId: h.holdingId, ticker: h.ticker, currency: h.currency,
+        action: 'HOLD' as const,
+        suggestedShares: 0, suggestedAmount: 0, suggestedAmountBase: 0,
+        currentAllocationPct: h.currentAllocationPct, targetAllocationPct: h.targetAllocationPct,
+        projectedAllocationPct: h.currentAllocationPct,
+        reason: 'No price data',
+      }
+    }
+
+    const weight = totalTarget > 0 ? h.targetAllocationPct / totalTarget : 0
+    const allocBase = weight * budgetBase
+    const allocAmount = fromBase(allocBase, h.currency, fxRate)
+    const shares = h.currentPricePerShare > 0 ? allocAmount / h.currentPricePerShare : 0
+
+    // Minimum buy amount check
+    const minAmount = h.currency === 'USD' ? minAmounts.usd : minAmounts.twd
+    if (minAmount > 0 && allocAmount < minAmount && allocAmount > 0) {
+      warnings.push(`${h.ticker}: skipped — allocated amount below ${minAmount} ${h.currency} minimum`)
+      return {
+        holdingId: h.holdingId, ticker: h.ticker, currency: h.currency,
+        action: 'HOLD' as const,
+        suggestedShares: 0, suggestedAmount: 0, suggestedAmountBase: 0,
+        currentAllocationPct: h.currentAllocationPct, targetAllocationPct: h.targetAllocationPct,
+        projectedAllocationPct: h.currentAllocationPct,
+        reason: `Amount too small (< ${minAmount} ${h.currency})`,
+      }
+    }
+
+    if (shares < DUST_SHARES) {
+      return {
+        holdingId: h.holdingId, ticker: h.ticker, currency: h.currency,
+        action: 'HOLD' as const,
+        suggestedShares: 0, suggestedAmount: 0, suggestedAmountBase: 0,
+        currentAllocationPct: h.currentAllocationPct, targetAllocationPct: h.targetAllocationPct,
+        projectedAllocationPct: h.currentAllocationPct,
+        reason: 'Amount too small',
+      }
+    }
+
+    deltas.set(h.holdingId, shares)
+    if (h.currency === 'USD') buyCost.usd += allocAmount
+    else buyCost.twd += allocAmount
+
+    return {
+      holdingId: h.holdingId, ticker: h.ticker, currency: h.currency,
+      action: 'BUY' as const,
+      suggestedShares: shares,
+      suggestedAmount: allocAmount,
+      suggestedAmountBase: allocBase,
+      currentAllocationPct: h.currentAllocationPct, targetAllocationPct: h.targetAllocationPct,
+      projectedAllocationPct: 0,  // filled below
+      reason: `Target: ${h.targetAllocationPct.toFixed(1)}%`,
+    }
+  })
+
+  // Compute projected allocations
+  const projMap = projectAllocationsWithTotal(holdings, deltas, projectedPortfolioBase, fxRate)
+  for (const t of trades) {
+    t.projectedAllocationPct = projMap.get(t.holdingId) ?? t.currentAllocationPct
+  }
+
+  const availableUsd = cashBalances.usd + (budgetCurrency === 'USD' ? budget : 0)
+  const availableTwd = cashBalances.twd + (budgetCurrency === 'TWD' ? budget : 0)
+  const cashSufficiency = checkCashSufficiency(buyCost, availableUsd, availableTwd, fxRate)
+
+  return {
+    trades,
+    totalBuyCost: buyCost,
+    totalSellProceeds: { usd: 0, twd: 0 },
+    netCashFlow: { usd: -buyCost.usd, twd: -buyCost.twd },
+    cashSufficiency,
+    warnings,
+  }
+}
+
 // ─── generateRebalancePlan ────────────────────────────────────────────────────
 
-/** Router: delegates to soft or hard planner based on strategy. */
+/** Router: delegates to soft, hard, or none planner based on strategy. */
 export function generateRebalancePlan(
   holdings: HoldingState[],
   budget: number,
   budgetCurrency: 'USD' | 'TWD',
   fxRate: number,
-  strategy: 'soft' | 'hard',
+  strategy: 'soft' | 'hard' | 'none',
   allocationMethod: 'proportional-to-drift' | 'equal-weight',
   cashBalances: { twd: number; usd: number },
   minimumBuyAmounts?: MinimumBuyAmounts,
 ): RebalancePlanResult {
+  if (strategy === 'none') {
+    return generateNoRebalancePlan(holdings, budget, budgetCurrency, fxRate, cashBalances, minimumBuyAmounts)
+  }
   return strategy === 'soft'
     ? generateSoftRebalancePlan(holdings, budget, budgetCurrency, fxRate, allocationMethod, cashBalances, minimumBuyAmounts)
     : generateHardRebalancePlan(holdings, budget, budgetCurrency, fxRate, allocationMethod, cashBalances, minimumBuyAmounts)

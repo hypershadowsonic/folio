@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { Plus, Trash2, Check, Loader2, AlertTriangle, MinusCircle, RotateCcw, Archive } from 'lucide-react'
+import { Plus, Trash2, Check, Loader2, AlertTriangle, MinusCircle, RotateCcw, Archive, Search } from 'lucide-react'
+import { useTickerSearch, detectCurrency } from '@/services/yahooFinance'
 import { IBKRImport } from './IBKRImport'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db } from '@/db/database'
@@ -354,14 +355,68 @@ function HoldingRow({
   onRemove: () => void
   onMoveToLegacy?: () => void
 }) {
+  const [tickerQuery, setTickerQuery] = useState(holding.ticker)
+  const [dropdownOpen, setDropdownOpen] = useState(false)
+  const wrapperRef = useRef<HTMLDivElement>(null)
+  const { results, isLoading } = useTickerSearch(tickerQuery)
+
+  // Close dropdown on outside click
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (wrapperRef.current && !wrapperRef.current.contains(e.target as Node)) {
+        setDropdownOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [])
+
+  const showDropdown = dropdownOpen && results.length > 0
+
   return (
-    <div className="grid grid-cols-[60px_1fr_70px_60px_52px_28px_28px] items-center gap-1.5">
-      <Input
-        value={holding.ticker}
-        onChange={(e) => onChange({ ticker: e.target.value.toUpperCase() })}
-        placeholder="VOO"
-        className="text-xs font-mono h-9"
-      />
+    <div className="grid grid-cols-[60px_1fr_70px_60px_52px_28px_28px] items-start gap-1.5">
+      {/* Ticker — with search dropdown */}
+      <div className="relative" ref={wrapperRef}>
+        <div className="relative">
+          <Input
+            value={tickerQuery}
+            onChange={(e) => {
+              const v = e.target.value.toUpperCase()
+              setTickerQuery(v)
+              onChange({ ticker: v })
+              setDropdownOpen(true)
+            }}
+            onFocus={() => setDropdownOpen(true)}
+            placeholder="VOO"
+            className="text-xs font-mono h-9 pr-6"
+          />
+          {isLoading && (
+            <Search className="absolute right-1.5 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground animate-pulse" />
+          )}
+        </div>
+        {showDropdown && (
+          <div className="absolute top-full left-0 z-50 mt-0.5 w-64 rounded-md border border-border bg-popover shadow-md">
+            {results.map((r) => (
+              <button
+                key={r.ticker}
+                type="button"
+                className="flex w-full items-center gap-2 px-2 py-1.5 text-left hover:bg-accent transition-colors"
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => {
+                  const currency = detectCurrency(r)
+                  onChange({ ticker: r.ticker, name: r.name, currency })
+                  setTickerQuery(r.ticker)
+                  setDropdownOpen(false)
+                }}
+              >
+                <span className="font-mono text-xs font-semibold text-primary w-16 shrink-0 truncate">{r.ticker}</span>
+                <span className="flex-1 text-xs truncate">{r.name}</span>
+                <span className="text-[10px] text-muted-foreground shrink-0">{r.exchange}</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
       <Input
         value={holding.name}
         onChange={(e) => onChange({ name: e.target.value })}
@@ -1175,6 +1230,7 @@ export function PortfolioSettings({ portfolioId }: { portfolioId: string }) {
             {([
               ['soft', 'Soft rebalance (buy-only)', "Over-allocate DCA to underweight; don't sell anything."],
               ['hard', 'Hard rebalance (sell + buy)', 'Sell overweight, then buy underweight to restore targets.'],
+              ['none', 'No rebalancing', 'Buy proportional to target allocation. Ignore current drift.'],
             ] as const).map(([value, label, description]) => (
               <label
                 key={value}

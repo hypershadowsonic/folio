@@ -509,7 +509,7 @@ function Step5DCA({
 }: {
   budget: string;           setBudget: (v: string) => void
   budgetCurrency: 'USD' | 'TWD'; setBudgetCurrency: (v: 'USD' | 'TWD') => void
-  strategy: 'soft' | 'hard';    setStrategy: (v: 'soft' | 'hard') => void
+  strategy: 'soft' | 'hard' | 'none';    setStrategy: (v: 'soft' | 'hard' | 'none') => void
   method: 'proportional-to-drift' | 'equal-weight'; setMethod: (v: 'proportional-to-drift' | 'equal-weight') => void
 }) {
   return (
@@ -550,7 +550,7 @@ function Step5DCA({
       {/* Rebalance strategy */}
       <div className="space-y-3">
         <Label>Default rebalance strategy</Label>
-        <RadioGroup value={strategy} onValueChange={(v) => setStrategy(v as 'soft' | 'hard')}>
+        <RadioGroup value={strategy} onValueChange={(v) => setStrategy(v as 'soft' | 'hard' | 'none')}>
           <label className={cn(
             'flex cursor-pointer items-start gap-3 rounded-lg border p-4 transition-colors',
             strategy === 'soft' ? 'border-primary bg-primary/5' : 'border-border hover:bg-muted/50',
@@ -574,6 +574,18 @@ function Step5DCA({
               <p className="text-xs text-muted-foreground mt-0.5">
                 Sell overweight holdings to free up cash, then buy underweight holdings
                 to restore targets.
+              </p>
+            </div>
+          </label>
+          <label className={cn(
+            'flex cursor-pointer items-start gap-3 rounded-lg border p-4 transition-colors',
+            strategy === 'none' ? 'border-primary bg-primary/5' : 'border-border hover:bg-muted/50',
+          )}>
+            <RadioGroupItem value="none" className="mt-0.5" />
+            <div>
+              <p className="text-sm font-medium">No rebalancing</p>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Buy proportional to target allocation every DCA period. Ignore current drift.
               </p>
             </div>
           </label>
@@ -633,7 +645,7 @@ function Step6Review({
   fxRate: string
   budget: string
   budgetCurrency: 'USD' | 'TWD'
-  strategy: 'soft' | 'hard'
+  strategy: 'soft' | 'hard' | 'none'
   method: 'proportional-to-drift' | 'equal-weight'
 }) {
   return (
@@ -694,7 +706,7 @@ function Step6Review({
         />
         <ReviewRow
           label="Rebalance strategy"
-          value={strategy === 'soft' ? 'Soft (buy-only)' : 'Hard (sell + buy)'}
+          value={strategy === 'soft' ? 'Soft (buy-only)' : strategy === 'hard' ? 'Hard (sell + buy)' : 'No rebalancing'}
         />
         <ReviewRow
           label="Allocation method"
@@ -748,7 +760,7 @@ export function SetupWizard() {
   // ── Step 5
   const [budget,          setBudget]          = useState('')
   const [budgetCurrency,  setBudgetCurrency]  = useState<'USD' | 'TWD'>('USD')
-  const [strategy,        setStrategy]        = useState<'soft' | 'hard'>('soft')
+  const [strategy,        setStrategy]        = useState<'soft' | 'hard' | 'none'>('soft')
   const [method,          setMethod]          = useState<'proportional-to-drift' | 'equal-weight'>('proportional-to-drift')
 
   // ── Navigation

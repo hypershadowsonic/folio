@@ -4,6 +4,7 @@
 
 @layer base {
   :root {
+    --mode-accent: 221.2 83.2% 53.3%; /* portfolio: cyan-blue */
     --background: 0 0% 100%;
     --foreground: 222.2 84% 4.9%;
     --card: 0 0% 100%;
@@ -24,6 +25,10 @@
     --input: 214.3 31.8% 91.4%;
     --ring: 221.2 83.2% 53.3%;
     --radius: 0.5rem;
+  }
+
+  [data-mode="build"] {
+    --mode-accent: 25 95% 53%; /* build: orange */
   }
 
   .dark {

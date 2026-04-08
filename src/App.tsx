@@ -2,21 +2,24 @@ import { useEffect, useState } from 'react'
 import { Plus } from 'lucide-react'
 import { useUIStore } from '@/stores/uiStore'
 import { usePortfolioStore } from '@/stores/portfolioStore'
+import { useModeStore } from '@/stores/modeStore'
 import { BottomNav } from '@/components/BottomNav'
+import { ModeToggle } from '@/components/ModeToggle'
 import { Button } from '@/components/ui/button'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { SetupWizard } from '@/features/settings/SetupWizard'
 import { OperationLogger } from '@/features/operations/OperationLogger'
 import { checkAndCaptureWeeklySnapshot } from '@/services/autoSnapshot'
 import { useDriftSummary } from '@/features/dashboard/DriftMonitor'
-import type { TabId } from '@/stores/uiStore'
+import type { PortfolioTabId } from '@/stores/uiStore'
 import Dashboard from '@/features/dashboard'
 import DcaPlanner from '@/features/dca-planner'
 import Operations from '@/features/operations'
 import Performance from '@/features/performance'
 import Settings from '@/features/settings'
+import BuildShell from '@/features/build'
 
-const TAB_CONTENT: Record<TabId, React.ReactNode> = {
+const PORTFOLIO_TAB_CONTENT: Record<PortfolioTabId, React.ReactNode> = {
   dashboard:     <ErrorBoundary tabName="Dashboard"><Dashboard /></ErrorBoundary>,
   'dca-planner': <ErrorBoundary tabName="DCA Planner"><DcaPlanner /></ErrorBoundary>,
   operations:    <ErrorBoundary tabName="Operations"><Operations /></ErrorBoundary>,
@@ -25,10 +28,13 @@ const TAB_CONTENT: Record<TabId, React.ReactNode> = {
 }
 
 export default function App() {
-  const activeTab     = useUIStore((s) => s.activeTab)
-  const setActiveTab  = useUIStore((s) => s.setActiveTab)
-  const portfolio     = usePortfolioStore((s) => s.portfolio)
+  const activeTab    = useUIStore((s) => s.activeTab)
+  const setActiveTab = useUIStore((s) => s.setActiveTab)
+  const buildTab     = useUIStore((s) => s.buildTab)
+  const setBuildTab  = useUIStore((s) => s.setBuildTab)
+  const portfolio    = usePortfolioStore((s) => s.portfolio)
   const loadPortfolio = usePortfolioStore((s) => s.loadPortfolio)
+  const mode         = useModeStore((s) => s.mode)
 
   const [loggerOpen, setLoggerOpen] = useState(false)
 
@@ -54,18 +60,37 @@ export default function App() {
   // Portfolio exists → normal app shell
   return (
     <div className="flex h-dvh flex-col bg-background">
+      {/* ── App header: mode toggle ──────────────────────────────────────── */}
+      <header className="flex h-12 shrink-0 items-center justify-center border-b border-border bg-background px-4">
+        <ModeToggle />
+      </header>
+
+      {/* ── Tab content ─────────────────────────────────────────────────── */}
       <main className="flex-1 overflow-y-auto pb-16">
-        {TAB_CONTENT[activeTab]}
+        {mode === 'portfolio'
+          ? PORTFOLIO_TAB_CONTENT[activeTab]
+          : <BuildShell />
+        }
       </main>
 
-      <BottomNav
-        activeTab={activeTab}
-        onTabChange={setActiveTab}
-        alerts={{ dashboard: driftAlerts }}
-      />
+      {/* ── Bottom navigation ───────────────────────────────────────────── */}
+      {mode === 'portfolio' ? (
+        <BottomNav
+          mode="portfolio"
+          activeTab={activeTab}
+          onTabChange={setActiveTab}
+          alerts={{ dashboard: driftAlerts }}
+        />
+      ) : (
+        <BottomNav
+          mode="build"
+          activeTab={buildTab}
+          onTabChange={setBuildTab}
+        />
+      )}
 
-      {/* ── Global "+" FAB — visible on all tabs when logger is closed ── */}
-      {!loggerOpen && (
+      {/* ── Global "+" FAB — Portfolio mode only ────────────────────────── */}
+      {mode === 'portfolio' && !loggerOpen && (
         <div className="fixed bottom-20 right-4 z-40">
           <Button
             size="icon"

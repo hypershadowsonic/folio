@@ -15,7 +15,7 @@ export interface Portfolio {
   supportedCurrencies: ('USD' | 'TWD')[]
   monthlyDCABudget: number
   monthlyDCABudgetCurrency: 'USD' | 'TWD'
-  defaultRebalanceStrategy: 'soft' | 'hard'
+  defaultRebalanceStrategy: 'soft' | 'hard' | 'none'
   defaultAllocationMethod: 'proportional-to-drift' | 'equal-weight'
   /**
    * The TWD/USD rate entered during setup. Used as a fallback when no real
@@ -198,7 +198,7 @@ export interface AmmunitionPool {
 
 // ─── DCA Planner (derived types, used by Phase 4 engine) ─────────────────────
 
-export type RebalanceStrategy = 'soft' | 'hard'
+export type RebalanceStrategy = 'soft' | 'hard' | 'none'
 export type AllocationMethod = 'proportional-to-drift' | 'equal-weight'
 
 export interface TradePlanRow {
@@ -222,4 +222,161 @@ export interface DcaPlan {
   totalEstimatedCost: number
   cashSufficient: boolean
   cashShortfall?: number
+}
+
+// ─── Yahoo Finance / Price Cache ──────────────────────────────────────────────
+
+export interface PricePoint {
+  date: string          // YYYY-MM-DD
+  adjustedClose: number
+}
+
+export interface PriceCache {
+  ticker: string        // primary key
+  startDate: Date
+  endDate: Date
+  interval: '1d'
+  prices: PricePoint[]
+  fetchedAt: Date
+}
+
+export interface TickerSearchResult {
+  ticker: string
+  name: string
+  exchange: string
+  type: string
+}
+
+export type ApiStatus = 'online' | 'offline-cached' | 'offline-no-cache'
+
+export interface CacheStats {
+  tickerCount: number
+  totalPricePoints: number
+  oldestFetchedAt: Date | null
+}
+
+// ─── Build Mode domain types ──────────────────────────────────────────────────
+
+export type RebalanceTrigger = 'on-dca' | 'periodic' | 'threshold'
+
+export interface BuildHolding {
+  ticker: string
+  name: string
+  currency: 'USD' | 'TWD'
+  targetAllocationPct: number   // 0–100, must sum to 100
+}
+
+export interface BacktestDataPoint {
+  date: Date
+  portfolioValue: number
+  costBasis: number
+  unrealizedPnL: number
+  totalReturnPct: number
+  holdings: { ticker: string; shares: number; value: number; allocationPct: number; driftFromTarget: number }[]
+  rebalanceTriggered: boolean
+  rebalanceType?: 'soft' | 'hard' | 'none'
+}
+
+export interface BacktestSummary {
+  totalReturn: number
+  totalReturnPct: number
+  annualizedReturnPct: number
+  totalInvested: number
+  endValue: number
+  maxDrawdownPct: number
+  bestMonthPct: number
+  worstMonthPct: number
+  totalRebalances: number
+  yoyGrowthPct: number | null
+  momGrowthPct: number | null
+}
+
+export interface BacktestResult {
+  buildId: string
+  runAt: Date
+  params: {
+    dcaAmount: number
+    dcaCurrency: 'USD' | 'TWD'
+    dcaFrequency: string
+    startDate: Date
+    endDate: Date
+    rebalanceStrategy: string
+    rebalanceTriggers: string[]
+  }
+  timeSeries: BacktestDataPoint[]
+  summary: BacktestSummary
+}
+
+export interface Build {
+  id: string
+  name: string
+  holdings: BuildHolding[]
+  dcaAmount: number
+  dcaCurrency: 'USD' | 'TWD'
+  dcaFrequency: 'weekly' | 'biweekly' | 'monthly'
+  startDate: Date
+  endDate: Date
+  rebalanceStrategy: 'soft' | 'hard' | 'none'
+  rebalanceTriggers: RebalanceTrigger[]
+  thresholdPct?: number
+  periodicFrequency?: 'monthly' | 'quarterly' | 'annually'
+  isFavorite: boolean
+  /** Populated when this Build was forked from a live Portfolio. */
+  sourceInfo?: {
+    sourceFolioId: string
+    forkType: 'target_allocation' | 'historical_snapshot'
+    snapshotDate?: Date
+  }
+  createdAt: Date
+  updatedAt: Date
+  lastBacktestResult?: BacktestResult
+}
+
+export interface Benchmark {
+  id: string
+  ticker: string
+  name: string
+  currency: 'USD' | 'TWD'
+  startDate: Date
+  endDate: Date
+  isFavorite: boolean
+  createdAt: Date
+  lastBacktestResult?: BacktestResult
+}
+
+export interface CompareItem {
+  type: 'build' | 'benchmark'
+  refId: string
+}
+
+export interface CompareResult {
+  compareId: string
+  runAt: Date
+  alignedParams: { dcaAmount: number; dcaCurrency: 'USD' | 'TWD'; dcaFrequency: string; startDate: Date; endDate: Date }
+  items: { refId: string; name: string; type: 'build' | 'benchmark'; result: BacktestResult }[]
+}
+
+export interface Compare {
+  id: string
+  name: string
+  items: CompareItem[]
+  isFavorite: boolean
+  createdAt: Date
+  lastCompareResult?: CompareResult
+}
+
+// ─── Lineage ──────────────────────────────────────────────────────────────────
+
+export interface EntityLink {
+  id: string
+  /** Set when relationType is 'promoted_from' — the Build that was promoted */
+  sourceBuildId?: string
+  /** Set when relationType is 'forked_from' — the Portfolio that was forked */
+  sourceFolioId?: string
+  /** Set when relationType is 'promoted_from' — the resulting Portfolio */
+  targetFolioId?: string
+  /** Set when relationType is 'forked_from' — the resulting Build */
+  targetBuildId?: string
+  relationType: 'promoted_from' | 'forked_from'
+  createdAt: Date
 }

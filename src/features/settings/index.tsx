@@ -8,6 +8,7 @@ import { CashFxManager } from './CashFxManager'
 import { AmmunitionPoolSettings } from './AmmunitionPoolSettings'
 import { BenchmarkSettings } from './BenchmarkSettings'
 import { DataManager } from './DataManager'
+import { ForkToBuild } from './ForkToBuild'
 
 export default function Settings() {
   const portfolio = usePortfolioStore((s) => s.portfolio)
@@ -38,6 +39,7 @@ export default function Settings() {
           <TabsTrigger value="cash-fx"    className="flex-1 text-xs">Cash &amp; FX</TabsTrigger>
           <TabsTrigger value="ammo"       className="flex-1 text-xs">Ammo Pool</TabsTrigger>
           <TabsTrigger value="benchmark"  className="flex-1 text-xs">Benchmark</TabsTrigger>
+          <TabsTrigger value="build"      className="flex-1 text-xs">Build</TabsTrigger>
           <TabsTrigger value="data"       className="flex-1 text-xs">Data</TabsTrigger>
         </TabsList>
 
@@ -55,6 +57,10 @@ export default function Settings() {
 
         <TabsContent value="benchmark">
           <BenchmarkSettings portfolioId={portfolio.id} />
+        </TabsContent>
+
+        <TabsContent value="build">
+          <ForkToBuild portfolioId={portfolio.id} />
         </TabsContent>
 
         <TabsContent value="data">

@@ -9,6 +9,11 @@ import type {
   Operation,
   AmmunitionPool,
   PortfolioSnapshot,
+  PriceCache,
+  Build,
+  Benchmark,
+  Compare,
+  EntityLink,
 } from '@/types'
 
 // PortfolioSnapshot has no id/portfolioId in the domain type (it's always
@@ -31,6 +36,11 @@ export class FolioDB extends Dexie {
   operations!:      Table<Operation>
   ammunitionPools!: Table<AmmunitionPool>
   snapshots!:       Table<SnapshotRecord>
+  priceCaches!:     Table<PriceCache>
+  builds!:          Table<Build>
+  benchmarks!:      Table<Benchmark>
+  compares!:        Table<Compare>
+  entityLinks!:     Table<EntityLink>
 
   constructor() {
     super('folio-db')
@@ -100,6 +110,76 @@ export class FolioDB extends Dexie {
           holding['status'] = 'active'
         }
       })
+    })
+
+    /**
+     * Version 3 — price cache table.
+     *
+     * Adds `priceCaches` for Yahoo Finance price data with 24h TTL.
+     * Primary key is `ticker`; `fetchedAt` indexed for expiry queries.
+     * No data migration needed — new empty table.
+     */
+    this.version(3).stores({
+      portfolios:      'id, createdAt',
+      holdings:        'id, portfolioId, sleeveId, ticker, status, [portfolioId+status]',
+      sleeves:         'id, portfolioId',
+      cashAccounts:    'id, portfolioId, currency, [portfolioId+currency]',
+      fxTransactions:  'id, portfolioId, timestamp',
+      fxLots:          'id, fxTransactionId, timestamp, [fxTransactionId+timestamp]',
+      operations:      'id, portfolioId, timestamp, type, tag, [portfolioId+timestamp], [portfolioId+type]',
+      ammunitionPools: 'portfolioId',
+      snapshots:       'id, portfolioId, timestamp, [portfolioId+timestamp]',
+      priceCaches:     'ticker, fetchedAt',
+    })
+
+    /**
+     * Version 4 — Build mode tables.
+     *
+     * Adds `builds`, `benchmarks`, and `compares` for the Build simulation mode.
+     * `isFavorite` is indexed for fast favorites-first sorting.
+     * No data upgrade needed — new empty tables.
+     */
+    this.version(4).stores({
+      portfolios:      'id, createdAt',
+      holdings:        'id, portfolioId, sleeveId, ticker, status, [portfolioId+status]',
+      sleeves:         'id, portfolioId',
+      cashAccounts:    'id, portfolioId, currency, [portfolioId+currency]',
+      fxTransactions:  'id, portfolioId, timestamp',
+      fxLots:          'id, fxTransactionId, timestamp, [fxTransactionId+timestamp]',
+      operations:      'id, portfolioId, timestamp, type, tag, [portfolioId+timestamp], [portfolioId+type]',
+      ammunitionPools: 'portfolioId',
+      snapshots:       'id, portfolioId, timestamp, [portfolioId+timestamp]',
+      priceCaches:     'ticker, fetchedAt',
+      builds:          'id, createdAt, isFavorite',
+      benchmarks:      'id, ticker, createdAt, isFavorite',
+      compares:        'id, createdAt, isFavorite',
+    })
+
+    /**
+     * Version 5 — EntityLink table.
+     *
+     * Adds `entityLinks` to track lineage between Builds and Portfolios:
+     * - `promoted_from`: a Build was promoted to a live Portfolio
+     * - `forked_from`: a Portfolio was forked to a Build
+     *
+     * All four ID fields are indexed to support fast lookups from either side.
+     * No data upgrade needed — new empty table.
+     */
+    this.version(5).stores({
+      portfolios:      'id, createdAt',
+      holdings:        'id, portfolioId, sleeveId, ticker, status, [portfolioId+status]',
+      sleeves:         'id, portfolioId',
+      cashAccounts:    'id, portfolioId, currency, [portfolioId+currency]',
+      fxTransactions:  'id, portfolioId, timestamp',
+      fxLots:          'id, fxTransactionId, timestamp, [fxTransactionId+timestamp]',
+      operations:      'id, portfolioId, timestamp, type, tag, [portfolioId+timestamp], [portfolioId+type]',
+      ammunitionPools: 'portfolioId',
+      snapshots:       'id, portfolioId, timestamp, [portfolioId+timestamp]',
+      priceCaches:     'ticker, fetchedAt',
+      builds:          'id, createdAt, isFavorite',
+      benchmarks:      'id, ticker, createdAt, isFavorite',
+      compares:        'id, createdAt, isFavorite',
+      entityLinks:     'id, sourceBuildId, sourceFolioId, targetBuildId, targetFolioId',
     })
   }
 }
