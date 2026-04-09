@@ -1,5 +1,6 @@
 import { Fragment, useState } from 'react'
-import { ArrowLeft, Copy, Edit2, BarChart2, Trash2, ArrowUpRight, GitBranch } from 'lucide-react'
+import { ArrowLeft, Copy, Edit2, BarChart2, Trash2, ArrowUpRight, GitBranch, Bug } from 'lucide-react'
+import { db } from '@/db/database'
 import {
   ResponsiveContainer,
   AreaChart,
@@ -153,6 +154,21 @@ export function BuildDetail({ build, onBack, onEdit, onDelete, onDuplicate }: Bu
     ? result.timeSeries[result.timeSeries.length - 1]
     : null
 
+  const resultTickers = new Set(lastPoint?.holdings.map((h) => h.ticker) ?? [])
+  const missingFromResult = result
+    ? build.holdings.filter((h) => !resultTickers.has(h.ticker))
+    : []
+  // Also catch tickers that appear in the result but ended with 0 shares —
+  // a sign the result was computed with a buggy engine that silently wasted DCA capital.
+  const zeroSharesInResult = result && lastPoint
+    ? build.holdings.filter((h) => {
+        const snap = lastPoint.holdings.find((lh) => lh.ticker === h.ticker)
+        return snap !== undefined && snap.shares === 0
+      })
+    : []
+  const isStale = result != null && new Date(build.updatedAt) > new Date(result.runAt)
+  const hasZeroShareWarning = zeroSharesInResult.length > 0
+
   const dcaRows = result
     ? result.timeSeries.map((pt, i) => {
         const prev = i > 0 ? result.timeSeries[i - 1] : null
@@ -180,6 +196,77 @@ export function BuildDetail({ build, onBack, onEdit, onDelete, onDuplicate }: Bu
       })
     : []
 
+  async function handleDownloadDebug() {
+    // Gather price cache summaries from IndexedDB for each holding
+    const tickers = build.holdings.map((h) => h.ticker)
+    const cacheSummary: Record<string, { cachedPriceCount: number; cacheFirstDate: string | null; cacheLastDate: string | null; fetchedAt: string | null }> = {}
+    for (const ticker of tickers) {
+      const cache = await db.priceCaches.get(ticker)
+      if (cache && cache.prices.length > 0) {
+        cacheSummary[ticker] = {
+          cachedPriceCount: cache.prices.length,
+          cacheFirstDate: cache.prices[0].date,
+          cacheLastDate: cache.prices[cache.prices.length - 1].date,
+          fetchedAt: cache.fetchedAt instanceof Date ? cache.fetchedAt.toISOString() : String(cache.fetchedAt),
+        }
+      } else {
+        cacheSummary[ticker] = { cachedPriceCount: 0, cacheFirstDate: null, cacheLastDate: null, fetchedAt: null }
+      }
+    }
+
+    // Per-holding summary from backtest result
+    const holdingsSummary = lastPoint?.holdings.map((h) => {
+      const firstNonZeroPt = result?.timeSeries.find(
+        (pt) => (pt.holdings.find((ph) => ph.ticker === h.ticker)?.shares ?? 0) > 0,
+      )
+      return {
+        ticker: h.ticker,
+        targetAllocationPct: build.holdings.find((bh) => bh.ticker === h.ticker)?.targetAllocationPct ?? 0,
+        finalShares: h.shares,
+        finalValue: h.value,
+        finalAllocationPct: h.allocationPct,
+        driftFromTarget: h.driftFromTarget,
+        firstNonZeroDate: firstNonZeroPt ? new Date(firstNonZeroPt.date).toISOString().slice(0, 10) : null,
+      }
+    }) ?? []
+
+    const debug = {
+      exportedAt: new Date().toISOString(),
+      buildConfig: {
+        id: build.id,
+        name: build.name,
+        holdings: build.holdings,
+        dcaAmount: build.dcaAmount,
+        dcaCurrency: build.dcaCurrency,
+        dcaFrequency: build.dcaFrequency,
+        startDate: build.startDate,
+        endDate: build.endDate,
+        rebalanceStrategy: build.rebalanceStrategy,
+        rebalanceTriggers: build.rebalanceTriggers,
+        thresholdPct: build.thresholdPct,
+        updatedAt: build.updatedAt,
+      },
+      priceCacheSummary: cacheSummary,
+      backtestResult: result ? {
+        runAt: result.runAt,
+        params: result.params,
+        summary: result.summary,
+        holdingsSummary,
+        timeSeries: result.timeSeries,
+      } : null,
+    }
+
+    const blob = new Blob([JSON.stringify(debug, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `folio-debug-${build.name.replace(/\s+/g, '-')}-${new Date().toISOString().slice(0, 10)}.json`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  }
+
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
@@ -201,6 +288,9 @@ export function BuildDetail({ build, onBack, onEdit, onDelete, onDuplicate }: Bu
         <Button variant="outline" size="sm" onClick={onEdit}>
           <Edit2 className="h-3.5 w-3.5 mr-1" />
           Edit
+        </Button>
+        <Button variant="ghost" size="sm" className="px-2 text-muted-foreground" title="Download debug data" onClick={handleDownloadDebug}>
+          <Bug className="h-4 w-4" />
         </Button>
         <Dialog>
           <DialogTrigger asChild>
@@ -261,6 +351,22 @@ export function BuildDetail({ build, onBack, onEdit, onDelete, onDuplicate }: Bu
           </Card>
         ) : (
           <>
+            {/* Stale result warning */}
+            {(isStale || missingFromResult.length > 0 || hasZeroShareWarning) && (
+              <div className="flex items-start gap-2 rounded-md border border-yellow-400 bg-yellow-50 dark:bg-yellow-950/30 dark:border-yellow-700 px-3 py-2.5 text-xs text-yellow-800 dark:text-yellow-300">
+                <span className="mt-0.5 shrink-0">⚠</span>
+                <span>
+                  Backtest result may be outdated — re-run for accurate results.
+                  {missingFromResult.length > 0 && (
+                    <> <span className="font-medium">{missingFromResult.map((h) => h.ticker).join(', ')}</span> {missingFromResult.length === 1 ? 'is' : 'are'} not in the current result.</>
+                  )}
+                  {zeroSharesInResult.length > 0 && (
+                    <> <span className="font-medium">{zeroSharesInResult.map((h) => h.ticker).join(', ')}</span> ended with 0 shares.</>
+                  )}
+                </span>
+              </div>
+            )}
+
             {/* Chart */}
             <Card>
               <CardContent className="pt-4 pb-2 px-2">

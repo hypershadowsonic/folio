@@ -155,6 +155,9 @@ function getPeriodicBucket(
  * Allocates dcaAmount to underweight holdings proportional to |drift|.
  * Fallback: allocate proportional to targetAllocationPct when all at/above target.
  *
+ * Tickers with no current or last-known price are excluded from drift calculations
+ * (they can't be bought, so treating them as underweight would silently waste DCA capital).
+ *
  * Mutates holdings[].shares in place.
  */
 function applySoftRebalance(
@@ -163,25 +166,36 @@ function applySoftRebalance(
   holdings: SimHolding[],
   priceMap: Record<string, number>,   // price per ticker in holding's native currency
   fxRate: number,
+  lastKnownPriceMap: Record<string, number>,
 ): void {
-  // Compute current portfolio value and drifts
+  // Compute current portfolio value using lastKnownPriceMap as fallback
   const portfolioValue = holdings.reduce((sum, h) => {
-    const price = priceMap[h.ticker] ?? 0
+    const price = priceMap[h.ticker] ?? lastKnownPriceMap[h.ticker] ?? 0
     return sum + toDcaCurrency(h.shares * price, h.currency, dcaCurrency, fxRate)
   }, 0)
 
   const totalValue = portfolioValue + dcaAmount
   const currentPcts = holdings.map((h) => {
-    const price = priceMap[h.ticker] ?? 0
+    const price = priceMap[h.ticker] ?? lastKnownPriceMap[h.ticker] ?? 0
     const val = toDcaCurrency(h.shares * price, h.currency, dcaCurrency, fxRate)
     return totalValue > 0 ? (val / totalValue) * 100 : 0
   })
 
   const drifts = holdings.map((h, i) => currentPcts[i] - h.targetAllocationPct)
 
-  // Find underweight holdings (drift < -epsilon)
+  // Find underweight holdings (drift < -epsilon) that also have a buyable price.
+  // Tickers with no price at all are excluded — we cannot buy them, so including
+  // them in underweight calculations would silently waste DCA capital.
   const underweightIdxs = drifts.reduce<number[]>((acc, d, i) => {
-    if (d < -1e-9) acc.push(i)
+    if (d < -1e-9) {
+      const priceInDca = toDcaCurrency(
+        priceMap[holdings[i].ticker] ?? lastKnownPriceMap[holdings[i].ticker] ?? 0,
+        holdings[i].currency,
+        dcaCurrency,
+        fxRate,
+      )
+      if (priceInDca > 0) acc.push(i)
+    }
     return acc
   }, [])
 
@@ -194,16 +208,25 @@ function applySoftRebalance(
         : 0,
     )
   } else {
-    // All at/above target: buy proportional to target allocation
-    const totalTarget = holdings.reduce((sum, h) => sum + h.targetAllocationPct, 0)
-    weights = holdings.map((h) => h.targetAllocationPct / totalTarget)
+    // All at/above target (or all unpriceable): buy proportional to target allocation
+    // among buyable holdings only.
+    const buyableHoldings = holdings.filter((h) => {
+      const p = priceMap[h.ticker] ?? lastKnownPriceMap[h.ticker] ?? 0
+      return toDcaCurrency(p, h.currency, dcaCurrency, fxRate) > 0
+    })
+    const totalTarget = buyableHoldings.reduce((sum, h) => sum + h.targetAllocationPct, 0)
+    weights = holdings.map((h) => {
+      const p = priceMap[h.ticker] ?? lastKnownPriceMap[h.ticker] ?? 0
+      const priceInDca = toDcaCurrency(p, h.currency, dcaCurrency, fxRate)
+      return priceInDca > 0 && totalTarget > 0 ? h.targetAllocationPct / totalTarget : 0
+    })
   }
 
   // Apply buys
   holdings.forEach((h, i) => {
     if (weights[i] <= 0) return
     const buyAmountDca = dcaAmount * weights[i]
-    const priceInDca = toDcaCurrency(priceMap[h.ticker] ?? 0, h.currency, dcaCurrency, fxRate)
+    const priceInDca = toDcaCurrency(priceMap[h.ticker] ?? lastKnownPriceMap[h.ticker] ?? 0, h.currency, dcaCurrency, fxRate)
     if (priceInDca > 0) {
       h.shares += buyAmountDca / priceInDca
     }
@@ -215,6 +238,9 @@ function applySoftRebalance(
  * Targets each holding at exactly targetAllocationPct of (currentPortfolioValue + dcaAmount).
  * Sells overweight, buys underweight. All done atomically with fractional shares.
  *
+ * Uses lastKnownPriceMap as fallback so holdings with calendar gaps (e.g. 0050.TW on a
+ * US-only trading day) are not valued at $0, which would understate totalAvailable.
+ *
  * Mutates holdings[].shares in place.
  */
 function applyHardRebalance(
@@ -223,20 +249,22 @@ function applyHardRebalance(
   holdings: SimHolding[],
   priceMap: Record<string, number>,
   fxRate: number,
+  lastKnownPriceMap: Record<string, number>,
 ): void {
   const portfolioValue = holdings.reduce((sum, h) => {
-    const price = priceMap[h.ticker] ?? 0
+    const price = priceMap[h.ticker] ?? lastKnownPriceMap[h.ticker] ?? 0
     return sum + toDcaCurrency(h.shares * price, h.currency, dcaCurrency, fxRate)
   }, 0)
 
   const totalAvailable = portfolioValue + dcaAmount
 
   holdings.forEach((h) => {
-    const priceInDca = toDcaCurrency(priceMap[h.ticker] ?? 0, h.currency, dcaCurrency, fxRate)
+    const price = priceMap[h.ticker] ?? lastKnownPriceMap[h.ticker] ?? 0
+    const priceInDca = toDcaCurrency(price, h.currency, dcaCurrency, fxRate)
     if (priceInDca <= 0) return
 
     const targetValue = totalAvailable * (h.targetAllocationPct / 100)
-    const currentValue = toDcaCurrency(h.shares * (priceMap[h.ticker] ?? 0), h.currency, dcaCurrency, fxRate)
+    const currentValue = toDcaCurrency(h.shares * price, h.currency, dcaCurrency, fxRate)
     const deltaShares = (targetValue - currentValue) / priceInDca
 
     h.shares = Math.max(0, h.shares + deltaShares)
@@ -448,20 +476,10 @@ export function runBacktest(
     // Skip entirely only if no holdings have a price yet
     if (Object.keys(priceMap).length === 0) continue
 
-    // Redistribute DCA among available holdings: temporarily scale target allocations
-    // so they sum to 100% for holdings that have a price (e.g., if ETHB isn't listed yet,
-    // its DCA share goes to the other holdings proportionally).
-    const totalAvailablePct = holdings
-      .filter((h) => h.ticker in priceMap)
-      .reduce((sum, h) => sum + h.targetAllocationPct, 0)
-    const originalAllocations = holdings.map((h) => h.targetAllocationPct)
-    holdings.forEach((h) => {
-      h.targetAllocationPct = h.ticker in priceMap
-        ? (h.targetAllocationPct / totalAvailablePct) * 100
-        : 0
-    })
-
-    // Resolve FX rate
+    // Resolve FX rate BEFORE mutating targetAllocationPct.
+    // This must come first: the continue below would otherwise skip the restore step
+    // that follows the redistribution, permanently corrupting targetAllocationPct for
+    // tickers that have no price yet (e.g. IBIT before its listing date).
     let fxRate = lastKnownFxRate ?? 1
     if (needsFx) {
       const rate = getFxRateOnOrBefore(fxRates, dateStr)
@@ -474,6 +492,19 @@ export function runBacktest(
       }
       // else: use lastKnownFxRate as fallback
     }
+
+    // Redistribute DCA among available holdings: temporarily scale target allocations
+    // so they sum to 100% for holdings that have a price (e.g., if IBIT isn't listed yet,
+    // its DCA share goes to the other holdings proportionally).
+    const totalAvailablePct = holdings
+      .filter((h) => h.ticker in priceMap)
+      .reduce((sum, h) => sum + h.targetAllocationPct, 0)
+    const originalAllocations = holdings.map((h) => h.targetAllocationPct)
+    holdings.forEach((h) => {
+      h.targetAllocationPct = h.ticker in priceMap
+        ? (h.targetAllocationPct / totalAvailablePct) * 100
+        : 0
+    })
 
     // Accumulate investment
     totalInvested += dcaAmount
@@ -523,9 +554,9 @@ export function runBacktest(
       applyProportionalBuy(dcaAmount, dcaCurrency, holdings, priceMap, fxRate)
     } else if (triggered) {
       if (rebalanceStrategy === 'soft') {
-        applySoftRebalance(dcaAmount, dcaCurrency, holdings, priceMap, fxRate)
+        applySoftRebalance(dcaAmount, dcaCurrency, holdings, priceMap, fxRate, lastKnownPriceMap)
       } else {
-        applyHardRebalance(dcaAmount, dcaCurrency, holdings, priceMap, fxRate)
+        applyHardRebalance(dcaAmount, dcaCurrency, holdings, priceMap, fxRate, lastKnownPriceMap)
       }
     } else {
       applyProportionalBuy(dcaAmount, dcaCurrency, holdings, priceMap, fxRate)
