@@ -252,3 +252,21 @@ function parseCSVLine(line: string): string[] {
   result.push(current)
   return result
 }
+
+/**
+ * Decode a CSV file ArrayBuffer with automatic encoding detection.
+ * Exported so both IBKRImport and SetupWizard share the same logic.
+ */
+export function decodeCSVBuffer(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer)
+  // UTF-16 LE BOM: FF FE
+  if (bytes[0] === 0xFF && bytes[1] === 0xFE) return new TextDecoder('utf-16le').decode(buffer)
+  // UTF-16 BE BOM: FE FF
+  if (bytes[0] === 0xFE && bytes[1] === 0xFF) return new TextDecoder('utf-16be').decode(buffer)
+  // UTF-16 LE without BOM: ASCII chars produce 0x00 high bytes (~50% nulls)
+  const sample = bytes.slice(0, Math.min(200, bytes.length))
+  const nullCount = sample.reduce((n, b) => n + (b === 0 ? 1 : 0), 0)
+  if (nullCount > sample.length * 0.25) return new TextDecoder('utf-16le').decode(buffer)
+  // UTF-8 (handles BOM — parser strips \uFEFF)
+  return new TextDecoder('utf-8').decode(buffer)
+}

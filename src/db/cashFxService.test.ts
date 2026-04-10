@@ -157,7 +157,7 @@ describe('Phase 2 end-to-end pipeline', () => {
 
   // ── Step 7 ──────────────────────────────────────────────────────────────────
 
-  it('Step 7 — consumeFxLotsForTrade $2500 follows FIFO and returns correct blendedRate', async () => {
+  it('Step 7 — consumeFxLotsForBuy $2500 follows FIFO and returns correct blendedRate', async () => {
     await svc.recordCashDeposit(portfolioId, 'TWD', 200_000)
 
     await svc.recordFxExchange(portfolioId, {
@@ -176,7 +176,7 @@ describe('Phase 2 end-to-end pipeline', () => {
     //   all of Lot1 ($2000 @ 31.5) + $500 from Lot2 (@ 32.0)
     //   baseCurrencyCost = 2000×31.5 + 500×32.0 = 63000 + 16000 = 79000
     //   blendedRate      = 79000 / 2500 = 31.6
-    const fxCostBasis = await svc.consumeFxLotsForTrade(portfolioId, 'USD', 2_500)
+    const fxCostBasis = await svc.consumeFxLotsForBuy(portfolioId, 'USD', 2_500)
 
     expect(fxCostBasis).toBeDefined()
     expect(fxCostBasis!.baseCurrencyCost).toBe(79_000)
@@ -196,9 +196,9 @@ describe('Phase 2 end-to-end pipeline', () => {
     expect(available[0].remainingAmount).toBe(500)
   })
 
-  // ── Edge case: insufficient USD lots ────────────────────────────────────────
+  // ── Edge case: insufficient lots — uses fallback rate ────────────────────────
 
-  it('consumeFxLotsForTrade throws InsufficientFxLotsError when lots < amount', async () => {
+  it('consumeFxLotsForBuy uses fallback rate when lots are insufficient', async () => {
     await svc.recordCashDeposit(portfolioId, 'TWD', 200_000)
     await svc.recordFxExchange(portfolioId, {
       fromCurrency: 'TWD', fromAmount: 31_500,
@@ -206,11 +206,43 @@ describe('Phase 2 end-to-end pipeline', () => {
       rate: 31.5, fees: 0, feesCurrency: 'TWD',
     })
 
-    // Try to consume more than available
-    const { InsufficientFxLotsError } = await import('@/engine/fifo')
+    // Lots only cover $1000; remaining $4000 filled at fallback rate (initialFxRate = 31.5)
+    // baseCurrencyCost = 1000×31.5 + 4000×31.5 = 5000×31.5 = 157_500
+    const fxCostBasis = await svc.consumeFxLotsForBuy(portfolioId, 'USD', 5_000)
+
+    expect(fxCostBasis).toBeDefined()
+    expect(fxCostBasis!.baseCurrencyCost).toBeCloseTo(157_500, 2)
+    expect(fxCostBasis!.blendedRate).toBeCloseTo(31.5, 5)
+    // First consumed entry = real lot, second = synthetic 'cash' fallback
+    expect(fxCostBasis!.fxLotsConsumed[0]).toMatchObject({ amount: 1_000, rate: 31.5 })
+    expect(fxCostBasis!.fxLotsConsumed[1]).toMatchObject({ lotId: 'cash', amount: 4_000, rate: 31.5 })
+  })
+
+  // ── Edge case: no FX rate at all — throws ───────────────────────────────────
+
+  it('consumeFxLotsForBuy throws when no FX rate is available', async () => {
+    // Seed a portfolio with no initialFxRate, no fxRateOverride, no lots
+    const dbModule = await import('@/db/database')
+    const realDb = dbModule.db
+    const bareId = crypto.randomUUID()
+    const now = new Date()
+    await realDb.portfolios.add({
+      id: bareId,
+      name: 'No-Rate Portfolio',
+      baseCurrency: 'TWD',
+      supportedCurrencies: ['TWD', 'USD'],
+      monthlyDCABudget: 0,
+      monthlyDCABudgetCurrency: 'USD',
+      defaultRebalanceStrategy: 'soft',
+      defaultAllocationMethod: 'proportional-to-drift',
+      // initialFxRate deliberately omitted
+      createdAt: now,
+      updatedAt: now,
+    })
+
     await expect(
-      svc.consumeFxLotsForTrade(portfolioId, 'USD', 5_000)
-    ).rejects.toThrowError(InsufficientFxLotsError)
+      svc.consumeFxLotsForBuy(bareId, 'USD', 1_000),
+    ).rejects.toThrow('No FX rate available')
   })
 
   // ── Edge case: withdrawal blocked by insufficient balance ────────────────────

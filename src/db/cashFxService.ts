@@ -20,7 +20,7 @@ import type {
 import { applyCashEffect, calculateFxCashEffect } from '@/engine/cash'
 export { InsufficientCashError } from '@/engine/cash'
 import {
-  calculateFxCostBasis,
+  consumeFxLots,
   getFxLotQueue as engineGetFxLotQueue,
   getLatestFxRate as engineGetLatestFxRate,
 } from '@/engine/fifo'
@@ -288,29 +288,58 @@ export async function recordFxExchange(
   )
 }
 
-// ─── 4. consumeFxLotsForTrade ─────────────────────────────────────────────────
+// ─── 4. consumeFxLotsForBuy ───────────────────────────────────────────────────
 
-export async function consumeFxLotsForTrade(
+/**
+ * Unified FX lot consumption for any USD BUY trade.
+ *
+ * Returns undefined for TWD-denominated trades (no FX conversion needed).
+ *
+ * For USD: loads all lots FIFO, resolves the best available fallback rate,
+ * calls consumeFxLots, persists updated remainingAmounts, returns fxCostBasis.
+ *
+ * Fallback rate hierarchy (applied when lots are insufficient):
+ *   1. portfolio.fxRateOverride  (explicit user override)
+ *   2. getLatestFxRate(allLots)  (most recent actual exchange rate, incl. exhausted)
+ *   3. portfolio.initialFxRate   (setup-time rate)
+ *   Throws a descriptive Error if none of the above are available.
+ *
+ * Safe to call inside an outer db.transaction() that already includes
+ * db.portfolios, db.fxTransactions, and db.fxLots — Dexie will auto-enlist.
+ */
+export async function consumeFxLotsForBuy(
   portfolioId: string,
-  currency: 'USD' | 'TWD',
-  amount: number,
+  tradeCurrency: 'USD' | 'TWD',
+  amountNeeded: number,
 ): Promise<OperationEntry['fxCostBasis']> {
-  return db.transaction('rw', [db.fxTransactions, db.fxLots], async () => {
-    const lots = await loadLotsForPortfolio(portfolioId, currency)
+  if (tradeCurrency === 'TWD') return undefined
 
-    const result = calculateFxCostBasis(lots, currency, amount, 'TWD')
-    if (!result) return undefined // base currency trade — no FX cost basis
+  // Load all lots for rate resolution (including exhausted — latest rate matters)
+  const allLots = await loadLotsForPortfolio(portfolioId, tradeCurrency)
+  const availableLots = allLots.filter(l => l.remainingAmount > 0)
 
-    // Persist updated remainingAmounts back to Dexie
-    for (const updatedLot of result.updatedLots) {
-      await db.fxLots.update(updatedLot.id, {
-        remainingAmount: updatedLot.remainingAmount,
-      })
-    }
+  // Resolve fallback rate: override > latest actual rate > setup rate
+  const portfolio = await db.portfolios.get(portfolioId)
+  const fallbackRate =
+    portfolio?.fxRateOverride ??
+    engineGetLatestFxRate(allLots) ??
+    portfolio?.initialFxRate
 
-    const { updatedLots: _unused, ...fxCostBasis } = result
-    return fxCostBasis
-  })
+  if (fallbackRate === undefined) {
+    throw new Error(
+      'No FX rate available. Log an FX exchange or set a rate override in ' +
+      'Settings → Cash & FX Manager before logging USD trades.',
+    )
+  }
+
+  const { consumed, blendedRate, baseCurrencyCost, updatedLots } =
+    consumeFxLots(availableLots, amountNeeded, fallbackRate)
+
+  for (const lot of updatedLots) {
+    await db.fxLots.update(lot.id, { remainingAmount: lot.remainingAmount })
+  }
+
+  return { fxLotsConsumed: consumed, blendedRate, baseCurrencyCost }
 }
 
 // ─── 5. getCashBalances ───────────────────────────────────────────────────────

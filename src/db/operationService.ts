@@ -3,7 +3,7 @@
  *
  * Orchestrates:
  *   1. Full before/after PortfolioSnapshot via snapshotService.captureSnapshot
- *   2. FIFO FX lot consumption for foreign-currency BUYs (pure engine, no nested tx)
+ *   2. FIFO FX lot consumption for foreign-currency BUYs via consumeFxLotsForBuy
  *   3. Cash balance updates via cash engine
  *   4. Holding position tracking (currentShares, averageCostBasis, averageCostBasisBase)
  *   5. Atomic persistence of all changes in a single db.transaction
@@ -15,7 +15,7 @@
 
 import { db } from '@/db'
 import { captureSnapshot } from '@/db/snapshotService'
-import { consumeFxLots } from '@/engine/fifo'
+import { consumeFxLotsForBuy } from '@/db/cashFxService'
 import { applyCashEffect } from '@/engine/cash'
 import { updateHoldingOnBuy, updateHoldingOnSell } from '@/db/holdingService'
 import { checkAndAutoArchive } from '@/services/holdingLifecycle'
@@ -23,7 +23,6 @@ export { InsufficientCashError } from '@/engine/cash'
 export { InsufficientSharesError } from '@/db/holdingService'
 import type {
   Holding,
-  FxLot,
   Operation,
   OperationEntry,
   OperationType,
@@ -59,40 +58,14 @@ export interface TradeOperationParams {
   timestamp?: Date
 }
 
-// ─── Internal helpers ─────────────────────────────────────────────────────────
-
-/**
- * Loads available FX lots for a portfolio+currency, sorted ascending (FIFO).
- * Must be called inside a transaction that includes fxTransactions + fxLots.
- */
-async function loadAvailableLots(
-  portfolioId: string,
-  currency: 'USD' | 'TWD',
-): Promise<FxLot[]> {
-  const txIds = (await db.fxTransactions
-    .where('portfolioId')
-    .equals(portfolioId)
-    .primaryKeys()) as string[]
-
-  if (txIds.length === 0) return []
-
-  const lots = await db.fxLots
-    .where('fxTransactionId')
-    .anyOf(txIds)
-    .sortBy('timestamp')
-
-  return lots.filter(l => l.currency === currency && l.remainingAmount > 0)
-}
-
 // ─── createTradeOperation ─────────────────────────────────────────────────────
 
 /**
  * Core trade pipeline. Handles any combination of BUY/SELL entries across
- * holdings. For foreign-currency BUYs, consumes FX lots inline (FIFO) without
- * opening a nested transaction.
+ * holdings. For foreign-currency BUYs, delegates to consumeFxLotsForBuy.
  *
  * Throws:
- *   - InsufficientFxLotsError  if a BUY in USD cannot be fully funded by lots
+ *   - Error ('No FX rate available') if a USD BUY has no rate to fall back on
  *   - InsufficientCashError    if cash balances are insufficient
  *   - InsufficientSharesError  if a SELL exceeds current holding shares
  */
@@ -122,10 +95,6 @@ export async function createTradeOperation(
 
       const snapshotBefore = await captureSnapshot(portfolioId)
       snapshotBefore.timestamp = new Date(opTimestamp.getTime() - 1)
-
-      // ── Load portfolio for FX fallback rate ────────────────────────────────
-      const portfolio = await db.portfolios.get(portfolioId)
-      const portfolioFxRate = portfolio?.fxRateOverride ?? portfolio?.initialFxRate
 
       // ── Load holdings for this operation ───────────────────────────────────
       const holdingIds = [...new Set(params.entries.map(e => e.holdingId))]
@@ -157,20 +126,7 @@ export async function createTradeOperation(
 
         if (input.side === 'BUY') {
           // ── FX lot consumption (only for foreign-currency holdings) ─────────
-          let fxCostBasis: OperationEntry['fxCostBasis'] | undefined
-
-          if (holding.currency !== 'TWD') {
-            const lots = await loadAvailableLots(portfolioId, holding.currency)
-            // portfolioFxRate is the fallback for any gap not covered by FX lots
-            const { consumed, blendedRate, baseCurrencyCost, updatedLots } =
-              consumeFxLots(lots, grossCost, portfolioFxRate)
-
-            fxCostBasis = { fxLotsConsumed: consumed, blendedRate, baseCurrencyCost }
-
-            for (const lot of updatedLots) {
-              await db.fxLots.update(lot.id, { remainingAmount: lot.remainingAmount })
-            }
-          }
+          const fxCostBasis = await consumeFxLotsForBuy(portfolioId, holding.currency, grossCost)
 
           // ── Cash deduction ─────────────────────────────────────────────────
           balances = applyCashEffect(balances, {

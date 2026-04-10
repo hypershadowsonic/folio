@@ -400,6 +400,149 @@ Two-tier cash reserve for drawdown deployment:
 
 ---
 
+### F-B8: Lab
+
+**Description**: Side-by-side A/B backtesting workbench. Users edit portfolio parameters for two Builds inline and see backtest results in the same viewport without leaving the comparison context. Replaces Compare (F-B4) for 2-item comparisons; Compare is retained only for 3–4 item scenarios (accessed via Builds tab menu).
+
+**Navigation**: Build mode bottom tabs become `Dashboard | Builds | Lab | Settings`.
+
+#### Layout — Desktop
+
+```
+┌──────────────────────────────────────────────────────┐
+│ [Date Range] [Currency] [Frequency] [Amount] [Update All] [⟲ Reset] │
+├──────────────────────────────────────────────────────┤
+│  📈 Chart                                            │
+│  Build A (solid/dashed) + Build B + Benchmark (dotted)│
+│                                    [+ Add Benchmark] │
+├──────────────────────┬───────────────────────────────┤
+│ ▪ Build A            │ ▪ Build B                     │
+│ AnnRtn | MaxDD | CB | EV │ AnnRtn | MaxDD | CB | EV │
+├──────────────────────┼───────────────────────────────┤
+│ [Load ▾] [Save ▾]    │ [Load ▾] [Save ▾]            │
+│ Holdings list        │ Holdings list                 │
+│ Rebalance Strategy   │ Rebalance Strategy            │
+│ Rebalance Trigger    │ Rebalance Trigger             │
+│                      │                               │
+│ [Update Backtest]    │ [Update Backtest]             │
+│          [Sync A→B] [Sync B→A]                       │
+└──────────────────────┴───────────────────────────────┘
+```
+
+#### Layout — Mobile
+
+```
+┌─────────────────────────┐
+│ [Shared Controls - collapsible] [⟲] │
+├─────────────────────────┤
+│ 📈 Chart (sticky top)    │
+├─────────────────────────┤
+│ [Tab A] [Tab B]          │
+├─────────────────────────┤
+│ Metrics row (active tab) │
+│ Build maker (active tab) │
+│ [Update Backtest]        │
+│ [Save ▾] [Sync →]       │
+└─────────────────────────┘
+```
+
+Only the active tab's Build maker is visible. Chart always shows both lines. Shared controls collapse to a single summary row with a chevron to expand.
+
+**Acceptance Criteria**:
+
+**Shared Controls (top bar)**:
+- Date range: start + end date calendar pickers; applied to both Builds and Benchmark
+- Display currency: USD / TWD toggle; current spot rate fetched from `USDTWD=X` (cached 24h, display-only)
+- DCA frequency: weekly / biweekly / monthly
+- DCA amount: number input; currency follows display currency setting
+- Update All: visible when any Build is stale; runs backtest for all stale Builds in one action
+- Reset Lab: confirmation prompt ("Reset Lab to initial state? Unsaved changes will be lost."); on confirm, atomically clears `labDraft` from IndexedDB then loads fresh initial state — never reads stale draft during reset
+- Any shared control change marks both Builds as stale
+
+**Chart**:
+- Overlay line chart (Recharts)
+- Build A: color 1 — solid when current, dashed + semi-transparent when stale
+- Build B: color 2 — solid when current, dashed + semi-transparent when stale
+- Benchmark: dotted gray (optional, one at a time)
+- Y-axis: growth % normalized to 0% at each line's own start date
+- Tooltip: date, each line's growth %, value in display currency, rank
+- If Build start dates differ by > 6 months: info badge "⚠ Different start dates — results reflect different market conditions"
+- Each line's actual start date annotated on chart with a subtle marker
+
+**Benchmark** (below chart):
+- "Add Benchmark" button opens Yahoo Finance ticker search (same autocomplete as Build ticker search)
+- Runs single-holding DCA simulation using shared controls' params
+- Renders as third dotted line; labeled "Quick benchmark (not saved)"
+- Not saved to Builds tab Benchmark list; can be removed or changed at any time
+- Does not appear in metrics row
+
+**Stale State**:
+- A Build enters stale state when: any parameter in its Build maker is modified, any shared control changes, or a Sync overwrites it
+- Visual treatment: chart line dashes + semi-transparent; metrics values muted; label "Parameters changed — re-run to update" on Build maker
+- Resolves on "Update Backtest" (individual) or "Update All" (shared)
+
+**Metrics Row**:
+Two side-by-side cards (Build A | Build B), each showing:
+
+| Metric | Description |
+|---|---|
+| Annualized Return % | CAGR over backtest period |
+| Max Drawdown % | Largest peak-to-trough decline |
+| Cost Basis | Total DCA contributions |
+| End Value | Portfolio value at end date |
+
+Stale: values shown with muted treatment + "Parameters changed — re-run to update."
+Empty slot: placeholder card.
+
+**Build Makers (A & B)**:
+- Load: dropdown of existing Builds from Builds tab; selecting one populates all fields and marks Build as stale (no auto-run)
+- Save dropdown:
+  - "Save as new Build" — creates new Build in Builds list
+  - "Update [Build Name]" — overwrites source Build (only shown if loaded from existing Build)
+- Holdings list: ticker | name | allocation % | currency; allocation must sum to 100% (real-time validation); Yahoo Finance autocomplete (debounced 300ms); per-row remove button
+- Rebalance Strategy: radio — soft (buy-only) / hard (sell + buy)
+- Rebalance Trigger: checkboxes — on-dca / periodic / threshold (at least one required)
+  - Periodic: frequency dropdown (monthly / quarterly / annually)
+  - Threshold: % input (default ±5%)
+- Update Backtest button: runs backtest using this Build maker's params + shared controls' DCA params + date range; on completion, updates chart line (solid) and metrics card, clears stale state
+
+**Sync Buttons** (between Build makers on desktop; bottom of active Build maker on mobile):
+- "Sync A → B" and "Sync B → A"
+- Desktop interaction: first press turns button red and text changes to "Confirm"; second press within 3 seconds executes sync; no second press within 3s reverts to default
+- Mobile interaction: swipe horizontally to execute (prevents accidental double-tap)
+- What sync copies: holdings list (tickers, allocations, currencies), rebalance strategy and triggers
+- Sync does not copy backtest results; target Build enters stale state
+
+**Initial State** (first open or after Reset Lab):
+- Build A: loads Favorite Build; if none, most recently edited Build; if no Builds exist, empty state
+- Build B: empty — "Create or load a Build to compare"
+- Chart: shows Build A line if it has a prior backtest result; otherwise empty
+- Shared controls: populated from Build A's DCA params if loaded; otherwise defaults (monthly, $1,000 USD, earliest available to today)
+
+**Session Persistence**:
+- Lab state auto-saved to `labDraft` IndexedDB table on every parameter change
+- Draft includes: both Build maker configs, shared control values, backtest results, benchmark ticker
+- On next open, Lab restores from draft automatically
+- Draft is independent from the Builds list — configs written to Builds only on explicit Save
+- Reset Lab clears draft atomically, then loads fresh initial state
+
+**Technical Notes**:
+- Reuse `src/engine/backtest.ts` — no changes needed to the simulation function
+- Reuse `src/services/yahooFinance.ts` price cache and ticker search
+- Stale detection: `lastRunParamsA` / `lastRunParamsB` hashes stored in `labDraft`; compare current params against hash on every change; shared control changes invalidate both hashes
+- `labDraft` Dexie table: single-row document (`id = 'singleton'`), stores full Lab state as JSON
+
+**Relationship to Compare (F-B4)**:
+
+| Dimension | Lab | Compare (F-B4) |
+|---|---|---|
+| Items | Exactly 2 (A and B) | 2–4 items |
+| Editing | Inline parameter editing | Read-only (select existing Builds/Benchmarks) |
+| Primary use | Rapid A/B iteration | Multi-portfolio overview |
+| Entry point | Lab tab | Builds tab menu → "Compare" |
+
+---
+
 ## 8. Shared Features & Engines
 
 ### 8.1 Ticker Search
@@ -929,12 +1072,13 @@ App (Build mode — light orange accent)
 │   │   ├── Build Card → Build Detail + Edit + Re-run
 │   │   ├── Benchmark Card → Benchmark Detail
 │   │   └── Compare Card → Compare View
-│   └── Menu: Add Build / Add Benchmark / Compare
+│   └── Menu: Add Build / Add Benchmark / Compare (2–4 items)
 │
-├── Compare
-│   ├── Select Items (2–4 Builds/Benchmarks)
-│   ├── Overlay Chart (absolute $ / growth % toggle)
-│   └── Metrics Table
+├── Lab
+│   ├── Shared Controls (date range, currency, frequency, amount)
+│   ├── Overlay Chart (Build A + Build B + optional Benchmark)
+│   ├── Metrics Row (Build A card | Build B card)
+│   └── Build Makers (A | B) with Load / Save / Sync
 │
 └── Settings
     ├── Import / Export JSON
@@ -1128,6 +1272,36 @@ Two fully-working apps to merge. Key facts that govern the remaining phases:
 - **Notifications** (`src/services/notifications.ts` stub): implement drift alert push notifications
 - **Deploy to Vercel**: migrate from gh-pages — update `package.json` deploy scripts, add `vercel.json`, verify `api/prices.js` and `api/search.js` deploy alongside React frontend
 - **Responsive refinement**: audit new Build mode components at 375px
+
+---
+
+### Phase 14 — Lab Tab
+**Effort**: Medium (~4–5 days) | **Risk**: Low (reuses existing backtest engine and price infrastructure)
+
+**New files**:
+- `src/features/build/lab/LabTab.tsx` — root layout (desktop two-column, mobile tabbed A/B)
+- `src/features/build/lab/SharedControls.tsx` — top bar controls + Reset Lab confirmation dialog
+- `src/features/build/lab/BuildMaker.tsx` — holdings list, rebalance settings, Load/Save dropdown, Update Backtest button
+- `src/features/build/lab/LabChart.tsx` — overlay Recharts line chart; stale lines = dashed + semi-transparent; benchmark = dotted; start-date annotations; different-start-date warning badge
+- `src/features/build/lab/MetricsRow.tsx` — two side-by-side metric cards (AnnRtn, MaxDD, Cost Basis, End Value) with stale treatment
+- `src/features/build/lab/SyncButtons.tsx` — confirm-by-re-press / 3s timeout (desktop); swipe-to-confirm (mobile)
+
+**Modified files**:
+- `src/components/BottomNav.tsx` — replace `compare` tab with `lab` in `BUILD_TABS`
+- `src/features/build/builds/` — add "Compare" entry to FAB/top-right menu (Compare moves from bottom nav to Builds tab menu)
+- `src/db/database.ts` — **Dexie v6**: add `labDraft: 'id'` table (single-row document, `id = 'singleton'`)
+- `src/types/index.ts` — add `LabDraft` interface (both BuildMaker configs, shared controls, backtest results, benchmark ticker, `lastRunParamsA`/`lastRunParamsB` hashes)
+- `src/stores/uiStore.ts` — add `'lab'` to `TabId` union for Build mode
+
+**Reused without changes**:
+- `src/engine/backtest.ts` — Lab calls the same simulation function
+- `src/services/yahooFinance.ts` — price cache + ticker search + `USDTWD=X` spot fetch
+
+**Key implementation notes**:
+- Stale detection: hash `lastRunParamsA` / `lastRunParamsB` in `labDraft`; any param change or shared control change recomputes hash and compares; mismatches → stale
+- Reset Lab: clear `labDraft` row atomically first, then load fresh initial state — never read from stale draft during reset
+- Session persistence: auto-save full Lab state to `labDraft` on every param change (debounced ~500ms)
+- Initial state: Build A = Favorite Build or most recently edited; Build B = empty placeholder
 
 ---
 

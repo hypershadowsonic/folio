@@ -107,6 +107,7 @@ function DebugSection({ portfolioId }: { portfolioId: string }) {
   const [confirming, setConfirming] = useState<DebugAction | null>(null)
   const [running, setRunning]       = useState(false)
   const [done, setDone]             = useState<DebugAction | null>(null)
+  const loadPortfolio = usePortfolioStore(s => s.loadPortfolio)
 
   async function run(action: DebugAction) {
     setRunning(true)
@@ -126,13 +127,18 @@ function DebugSection({ portfolioId }: { portfolioId: string }) {
           })
           await db.cashAccounts.where('portfolioId').equals(portfolioId).modify({ balance: 0 })
         })
+        setDone(action)
+        setTimeout(() => setDone(null), 3000)
       } else if (action === 'snapshots') {
         await db.snapshots.where('portfolioId').equals(portfolioId).delete()
+        setDone(action)
+        setTimeout(() => setDone(null), 3000)
       } else {
-        // full-reset: clear all transactional data, keep portfolio/sleeves/holdings definitions
+        // full-reset: wipe ALL portfolio-mode data so the setup wizard re-appears
         await db.transaction('rw', [
           db.operations, db.fxTransactions, db.fxLots,
-          db.holdings, db.cashAccounts, db.snapshots, db.ammunitionPools,
+          db.holdings, db.cashAccounts, db.sleeves,
+          db.snapshots, db.ammunitionPools, db.portfolios,
         ], async () => {
           await db.operations.where('portfolioId').equals(portfolioId).delete()
           const txIds = await db.fxTransactions
@@ -141,16 +147,14 @@ function DebugSection({ portfolioId }: { portfolioId: string }) {
           await db.fxTransactions.where('portfolioId').equals(portfolioId).delete()
           await db.snapshots.where('portfolioId').equals(portfolioId).delete()
           await db.ammunitionPools.where('portfolioId').equals(portfolioId).delete()
-          await db.holdings.where('portfolioId').equals(portfolioId).modify({
-            currentShares: 0, currentPricePerShare: 0,
-            averageCostBasis: 0, averageCostBasisBase: 0,
-            status: 'active', archivedAt: undefined,
-          })
-          await db.cashAccounts.where('portfolioId').equals(portfolioId).modify({ balance: 0 })
+          await db.holdings.where('portfolioId').equals(portfolioId).delete()
+          await db.cashAccounts.where('portfolioId').equals(portfolioId).delete()
+          await db.sleeves.where('portfolioId').equals(portfolioId).delete()
+          await db.portfolios.where('id').equals(portfolioId).delete()
         })
+        // portfolio is now gone → store becomes undefined → App shows <SetupWizard />
+        await loadPortfolio()
       }
-      setDone(action)
-      setTimeout(() => setDone(null), 3000)
     } finally {
       setRunning(false)
       setConfirming(null)
@@ -171,7 +175,7 @@ function DebugSection({ portfolioId }: { portfolioId: string }) {
     {
       id: 'full-reset',
       label: 'Full reset',
-      detail: 'Clears all operations, FX data, snapshots, and ammunition pool. Resets all positions and cash to 0. Portfolio, sleeves, and holding definitions are preserved.',
+      detail: 'Wipes all data for this portfolio — operations, FX data, snapshots, holdings, sleeves, and the portfolio definition itself. The setup wizard will re-open so you can start fresh.',
     },
   ]
 
