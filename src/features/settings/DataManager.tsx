@@ -1,102 +1,58 @@
 /**
- * DataManager — full JSON export and import for all Folio data.
+ * DataManager - full JSON export and import for all durable Folio data.
  *
- * Export: reads all 9 Dexie tables, bundles into a single JSON file download.
- * Import: reads a JSON file, validates structure, clears and restores all tables.
+ * Export: bundles all user-authored Dexie tables into a versioned backup file.
+ * Import: accepts both legacy v1 backups and current v2 backups.
  */
 
-import { useState, useRef } from 'react'
-import { Download, Upload, AlertTriangle, CheckCircle2 } from 'lucide-react'
+import { useRef, useState } from 'react'
+import { AlertTriangle, CheckCircle2, Download, Upload } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { db } from '@/db/database'
-import type { SnapshotRecord } from '@/db/database'
-import type {
-  Portfolio, Holding, Sleeve, CashAccount,
-  FxTransaction, FxLot, Operation, AmmunitionPool,
-} from '@/types'
-
-// ─── Export envelope type ─────────────────────────────────────────────────────
-
-interface FolioExport {
-  version: 1
-  exportedAt: string
-  data: {
-    portfolios:      Portfolio[]
-    holdings:        Holding[]
-    sleeves:         Sleeve[]
-    cashAccounts:    CashAccount[]
-    fxTransactions:  FxTransaction[]
-    fxLots:          FxLot[]
-    operations:      Operation[]
-    ammunitionPools: AmmunitionPool[]
-    snapshots:       SnapshotRecord[]
-  }
-}
-
-const REQUIRED_KEYS: (keyof FolioExport['data'])[] = [
-  'portfolios', 'holdings', 'sleeves', 'cashAccounts',
-  'fxTransactions', 'fxLots', 'operations', 'ammunitionPools', 'snapshots',
-]
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+import {
+  countBackupRecords,
+  createBackupPayload,
+  getBackupTableKeys,
+  getBackupTableLabelCount,
+  importBackupPayload,
+  normalizeBackupPayload,
+  type FolioBackupV2,
+} from '@/db/backupService'
 
 function fmtDate(): string {
   return new Date().toISOString().slice(0, 10)
 }
 
-// ─── Component ────────────────────────────────────────────────────────────────
+const BACKUP_TABLE_KEYS = getBackupTableKeys()
 
 export function DataManager() {
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const [exporting, setExporting] = useState(false)
   const [importing, setImporting] = useState(false)
-  const [confirmData, setConfirmData] = useState<FolioExport | null>(null)
-  const [error, setError]     = useState<string | null>(null)
+  const [confirmData, setConfirmData] = useState<FolioBackupV2 | null>(null)
+  const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
-
-  // ── Export ──────────────────────────────────────────────────────────────────
 
   async function handleExport() {
     setExporting(true)
     setError(null)
     setSuccess(null)
+
     try {
-      const [
-        portfolios, holdings, sleeves, cashAccounts,
-        fxTransactions, fxLots, operations, ammunitionPools, snapshots,
-      ] = await Promise.all([
-        db.portfolios.toArray(),
-        db.holdings.toArray(),
-        db.sleeves.toArray(),
-        db.cashAccounts.toArray(),
-        db.fxTransactions.toArray(),
-        db.fxLots.toArray(),
-        db.operations.toArray(),
-        db.ammunitionPools.toArray(),
-        db.snapshots.toArray(),
-      ])
-
-      const payload: FolioExport = {
-        version: 1,
-        exportedAt: new Date().toISOString(),
-        data: {
-          portfolios, holdings, sleeves, cashAccounts,
-          fxTransactions, fxLots, operations, ammunitionPools, snapshots,
-        },
-      }
-
+      const payload = await createBackupPayload()
       const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
-      const url  = URL.createObjectURL(blob)
-      const a    = Object.assign(document.createElement('a'), {
+      const url = URL.createObjectURL(blob)
+      const anchor = Object.assign(document.createElement('a'), {
         href: url,
         download: `folio-backup-${fmtDate()}.json`,
       })
-      a.click()
+
+      anchor.click()
       URL.revokeObjectURL(url)
 
-      const total = Object.values(payload.data).reduce((s, arr) => s + arr.length, 0)
-      setSuccess(`Exported ${total} records across 9 tables.`)
+      setSuccess(
+        `Exported ${countBackupRecords(payload.data)} records across ${getBackupTableLabelCount()} tables.`,
+      )
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Export failed.')
     } finally {
@@ -104,90 +60,36 @@ export function DataManager() {
     }
   }
 
-  // ── Import: file pick ───────────────────────────────────────────────────────
-
   function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     setError(null)
     setSuccess(null)
+
     const file = e.target.files?.[0]
     if (!file) return
 
     const reader = new FileReader()
-    reader.onload = (ev) => {
+    reader.onload = (event) => {
       try {
-        const parsed = JSON.parse(ev.target?.result as string) as unknown
-
-        if (
-          typeof parsed !== 'object' || parsed === null ||
-          (parsed as { version?: unknown }).version !== 1 ||
-          typeof (parsed as { data?: unknown }).data !== 'object'
-        ) {
-          setError('Invalid backup file: missing version or data fields.')
-          return
-        }
-
-        const data = (parsed as FolioExport).data
-        const missingKeys = REQUIRED_KEYS.filter(k => !Array.isArray(data[k]))
-        if (missingKeys.length > 0) {
-          setError(`Invalid backup file: missing tables — ${missingKeys.join(', ')}.`)
-          return
-        }
-
-        setConfirmData(parsed as FolioExport)
-      } catch {
-        setError('Failed to parse file. Make sure it is a valid Folio backup JSON.')
+        const parsed = JSON.parse(event.target?.result as string) as unknown
+        setConfirmData(normalizeBackupPayload(parsed))
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to parse file.')
       }
     }
     reader.readAsText(file)
 
-    // Reset input so the same file can be re-selected after a cancel
     e.target.value = ''
   }
 
-  // ── Import: confirm and execute ─────────────────────────────────────────────
-
   async function handleConfirmImport() {
     if (!confirmData) return
+
     setImporting(true)
     setError(null)
+
     try {
-      const { data } = confirmData
-
-      await db.transaction(
-        'rw',
-        [
-          db.portfolios, db.holdings, db.sleeves, db.cashAccounts,
-          db.fxTransactions, db.fxLots, db.operations, db.ammunitionPools, db.snapshots,
-        ],
-        async () => {
-          // Clear in reverse dependency order
-          await Promise.all([
-            db.snapshots.clear(),
-            db.operations.clear(),
-            db.fxLots.clear(),
-            db.fxTransactions.clear(),
-            db.cashAccounts.clear(),
-            db.holdings.clear(),
-            db.sleeves.clear(),
-            db.ammunitionPools.clear(),
-            db.portfolios.clear(),
-          ])
-
-          // Restore in dependency order
-          if (data.portfolios.length)      await db.portfolios.bulkPut(data.portfolios)
-          if (data.sleeves.length)         await db.sleeves.bulkPut(data.sleeves)
-          if (data.holdings.length)        await db.holdings.bulkPut(data.holdings)
-          if (data.cashAccounts.length)    await db.cashAccounts.bulkPut(data.cashAccounts)
-          if (data.fxTransactions.length)  await db.fxTransactions.bulkPut(data.fxTransactions)
-          if (data.fxLots.length)          await db.fxLots.bulkPut(data.fxLots)
-          if (data.operations.length)      await db.operations.bulkPut(data.operations)
-          if (data.ammunitionPools.length) await db.ammunitionPools.bulkPut(data.ammunitionPools)
-          if (data.snapshots.length)       await db.snapshots.bulkPut(data.snapshots)
-        },
-      )
-
+      await importBackupPayload(confirmData)
       setConfirmData(null)
-      // Reload to reinitialise Zustand stores from fresh Dexie state
       window.location.reload()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Import failed.')
@@ -195,17 +97,13 @@ export function DataManager() {
     }
   }
 
-  // ── Render ──────────────────────────────────────────────────────────────────
-
   return (
     <div className="space-y-6 pt-2">
-
-      {/* ── Export ──────────────────────────────────────────────────────────── */}
       <div className="rounded-lg border border-border bg-card p-4 space-y-3">
         <h2 className="text-sm font-semibold">Export Data</h2>
         <p className="text-xs text-muted-foreground leading-relaxed">
-          Download all portfolio data as a single JSON file. Includes all holdings, sleeves,
-          operations, cash accounts, FX lots, and snapshots.
+          Download all durable Folio data as a single JSON file. Includes portfolio state,
+          operations, build-mode data, and settings. Price cache is excluded.
         </p>
         <Button
           size="sm"
@@ -215,16 +113,17 @@ export function DataManager() {
           disabled={exporting}
         >
           <Download className="h-4 w-4" />
-          {exporting ? 'Exporting…' : 'Export Backup'}
+          {exporting ? 'Exporting...' : 'Export Backup'}
         </Button>
       </div>
 
-      {/* ── Import ──────────────────────────────────────────────────────────── */}
       <div className="rounded-lg border border-border bg-card p-4 space-y-3">
         <h2 className="text-sm font-semibold">Import Data</h2>
         <p className="text-xs text-muted-foreground leading-relaxed">
           Restore from a Folio backup file.{' '}
-          <span className="font-medium text-destructive">This will replace ALL current data.</span>
+          <span className="font-medium text-destructive">
+            This will replace all current data and clear cached prices.
+          </span>
         </p>
         <Button
           size="sm"
@@ -245,7 +144,6 @@ export function DataManager() {
         />
       </div>
 
-      {/* ── Confirmation dialog ─────────────────────────────────────────────── */}
       {confirmData && (
         <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 dark:bg-amber-500/10 p-4 space-y-3">
           <div className="flex items-start gap-2">
@@ -258,10 +156,10 @@ export function DataManager() {
                 This will replace all existing data. Record counts in backup:
               </p>
               <ul className="text-xs text-muted-foreground space-y-0.5 pl-1">
-                {REQUIRED_KEYS.map(k => (
-                  <li key={k}>
-                    <span className="font-medium">{confirmData.data[k].length}</span>{' '}
-                    {k}
+                {BACKUP_TABLE_KEYS.map((key) => (
+                  <li key={key}>
+                    <span className="font-medium">{confirmData.data[key].length}</span>{' '}
+                    {key}
                   </li>
                 ))}
               </ul>
@@ -274,7 +172,7 @@ export function DataManager() {
               onClick={handleConfirmImport}
               disabled={importing}
             >
-              {importing ? 'Importing…' : 'Replace & Import'}
+              {importing ? 'Importing...' : 'Replace & Import'}
             </Button>
             <Button
               size="sm"
@@ -288,7 +186,6 @@ export function DataManager() {
         </div>
       )}
 
-      {/* ── Status messages ─────────────────────────────────────────────────── */}
       {success && (
         <div className="flex items-center gap-2 rounded-md bg-card border border-border px-3 py-2.5 text-sm">
           <CheckCircle2 className="h-4 w-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
@@ -296,10 +193,7 @@ export function DataManager() {
         </div>
       )}
 
-      {error && (
-        <p className="text-sm text-destructive">{error}</p>
-      )}
-
+      {error && <p className="text-sm text-destructive">{error}</p>}
     </div>
   )
 }

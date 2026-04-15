@@ -463,7 +463,6 @@ function HeroChartTooltip({
       {payload.map(p => (
         <div key={p.name} className="flex items-center gap-2">
           {/* dynamic color from Recharts series — no static Tailwind equivalent */}
-          {/* eslint-disable-next-line react/forbid-dom-props */}
           <span className="h-2 w-2 rounded-full shrink-0" style={{ background: p.color }} />
           <span className="text-muted-foreground">{p.name}:</span>
           <span className="font-semibold tabular-nums">{fmtCurrency(p.value, currency)}</span>
@@ -532,7 +531,6 @@ function SleeveAttributionSection({
                     : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
                   }
                   {/* dynamic sleeve color — no static Tailwind equivalent */}
-                  {/* eslint-disable-next-line react/forbid-dom-props */}
                   <span className="h-2 w-2 rounded-full shrink-0" style={{ background: sleeve.sleeveColor }} />
                   <span className="text-sm font-medium truncate">{sleeve.sleeveName}</span>
                 </div>
@@ -548,7 +546,6 @@ function SleeveAttributionSection({
                 </div>
               </div>
               <div className="h-1.5 w-full bg-muted rounded-full overflow-hidden">
-                {/* eslint-disable-next-line react/forbid-dom-props -- dynamic color/width require inline style */}
                 <div
                   className="h-full rounded-full transition-all duration-300"
                   style={{ width: `${barWidthPct}%`, background: sleeve.sleeveColor, opacity: isPositive ? 1 : 0.6 }}
@@ -579,7 +576,6 @@ function SleeveAttributionSection({
                         </div>
                       </div>
                       <div className="h-1 bg-muted rounded-full overflow-hidden ml-6">
-                        {/* eslint-disable-next-line react/forbid-dom-props -- dynamic width requires inline style */}
                         <div
                           className={cn('h-full rounded-full', hPositive ? 'bg-emerald-500 dark:bg-emerald-400' : 'bg-red-400')}
                           style={{ width: `${hBarPct}%` }}

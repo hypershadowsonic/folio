@@ -68,6 +68,9 @@ export async function updateHoldingOnBuy(
     currentPricePerShare: pricePerShare,
     averageCostBasis:     newAvg,
     averageCostBasisBase: newAvgBase,
+    ...(holding.status === 'archived'
+      ? { status: 'legacy' as const, archivedAt: undefined }
+      : {}),
   })
 }
 

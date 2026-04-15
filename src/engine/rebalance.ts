@@ -345,44 +345,21 @@ export function generateSoftRebalancePlan(
   const trades: TradePlan[] = holdings.map(h => {
     const allocBase = allocatedBase.get(h.holdingId) ?? 0
 
-    // Holdings without a price: show BUY with amount if eligible, HOLD otherwise
+    // Holdings without a price are skipped from the plan.
     if (h.currentPricePerShare <= 0) {
-      if (allocBase <= 0) {
-        return {
-          holdingId:              h.holdingId,
-          ticker:                 h.ticker,
-          currency:               h.currency,
-          action:                 'HOLD',
-          suggestedShares:        0,
-          suggestedAmount:        0,
-          suggestedAmountBase:    0,
-          currentAllocationPct:   h.currentAllocationPct,
-          targetAllocationPct:    h.targetAllocationPct,
-          projectedAllocationPct: h.currentAllocationPct,
-          reason: h.drift > 0
-            ? `Overweight by ${h.drift.toFixed(1)}% — no action (soft strategy)`
-            : 'At target',
-        } satisfies TradePlan
-      }
-      // Eligible no-price holding: give a suggested amount, user enters actual price + shares
       noPriceBuyCount++
-      const allocAmount = fromBase(allocBase, h.currency, fxRate)
-      if (h.currency === 'USD') buyCost.usd += allocAmount
-      else                      buyCost.twd += allocAmount
       return {
         holdingId:              h.holdingId,
         ticker:                 h.ticker,
         currency:               h.currency,
-        action:                 'BUY',
+        action:                 'HOLD',
         suggestedShares:        0,
-        suggestedAmount:        allocAmount,
-        suggestedAmountBase:    allocBase,
+        suggestedAmount:        0,
+        suggestedAmountBase:    0,
         currentAllocationPct:   h.currentAllocationPct,
         targetAllocationPct:    h.targetAllocationPct,
-        projectedAllocationPct: h.currentAllocationPct,  // unknown without price
-        reason: h.drift < 0
-          ? `Underweight by ${Math.abs(h.drift).toFixed(1)}% — enter actual price and shares`
-          : 'At target — enter actual price and shares',
+        projectedAllocationPct: h.currentAllocationPct,
+        reason: 'No price data',
       } satisfies TradePlan
     }
 
@@ -450,7 +427,7 @@ export function generateSoftRebalancePlan(
 
   if (noPriceBuyCount > 0) {
     warnings.push(
-      `${noPriceBuyCount} holding${noPriceBuyCount > 1 ? 's have' : ' has'} no price set — suggested amount shown. Enter actual price and shares when logging.`,
+      `${noPriceBuyCount} holding${noPriceBuyCount > 1 ? 's have' : ' has'} no price set and ${noPriceBuyCount > 1 ? 'were' : 'was'} skipped.`,
     )
   }
 
@@ -598,25 +575,21 @@ export function generateHardRebalancePlan(
     if (allocBase > 0) {
       const allocAmount = fromBase(allocBase, h.currency, fxRate)
 
-      // No-price holding: show suggested amount, user fills actual price + shares
+      // No-price holdings are skipped even when they would otherwise receive budget.
       if (h.currentPricePerShare <= 0) {
         noPriceBuyCount++
-        if (h.currency === 'USD') buyCost.usd += allocAmount
-        else                      buyCost.twd += allocAmount
         return {
           holdingId:              h.holdingId,
           ticker:                 h.ticker,
           currency:               h.currency,
-          action:                 'BUY',
+          action:                 'HOLD',
           suggestedShares:        0,
-          suggestedAmount:        allocAmount,
-          suggestedAmountBase:    allocBase,
+          suggestedAmount:        0,
+          suggestedAmountBase:    0,
           currentAllocationPct:   h.currentAllocationPct,
           targetAllocationPct:    h.targetAllocationPct,
           projectedAllocationPct: h.currentAllocationPct,
-          reason: h.drift < 0
-            ? `Underweight by ${Math.abs(h.drift).toFixed(1)}% — enter actual price and shares`
-            : 'At target — enter actual price and shares',
+          reason: 'No price data',
         } satisfies TradePlan
       }
 
@@ -684,7 +657,7 @@ export function generateHardRebalancePlan(
 
   if (noPriceBuyCount > 0) {
     warnings.push(
-      `${noPriceBuyCount} holding${noPriceBuyCount > 1 ? 's have' : ' has'} no price set — suggested amount shown. Enter actual price and shares when logging.`,
+      `${noPriceBuyCount} holding${noPriceBuyCount > 1 ? 's have' : ' has'} no price set and ${noPriceBuyCount > 1 ? 'were' : 'was'} skipped.`,
     )
   }
 

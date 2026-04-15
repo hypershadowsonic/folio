@@ -427,7 +427,6 @@ export function DriftMonitor({
   return (
     <div className="space-y-3">
       {/* Dynamic CSS injected once, covers all generated class names */}
-      {/* eslint-disable-next-line react/no-danger */}
       <style dangerouslySetInnerHTML={{ __html: dynamicCss }} />
 
       {/* ── Section header: title + health pill + "View all" ──────────────── */}

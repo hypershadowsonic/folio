@@ -78,6 +78,29 @@ async function persistSnapshots(
   await db.snapshots.add({ id: crypto.randomUUID(), portfolioId, ...after })
 }
 
+function assertFinitePositive(value: number, label: string): void {
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error(`${label} must be greater than 0.`)
+  }
+}
+
+function assertFiniteNonNegative(value: number, label: string): void {
+  if (!Number.isFinite(value) || value < 0) {
+    throw new Error(`${label} must be 0 or greater.`)
+  }
+}
+
+function normalizeTimestamp(timestamp?: Date): Date {
+  const resolved = timestamp ?? new Date()
+  if (Number.isNaN(resolved.getTime())) {
+    throw new Error('Timestamp must be a valid date.')
+  }
+  if (resolved.getTime() > Date.now()) {
+    throw new Error('Timestamp cannot be in the future.')
+  }
+  return resolved
+}
+
 // ─── 1. recordCashDeposit ─────────────────────────────────────────────────────
 
 export async function recordCashDeposit(
@@ -87,11 +110,12 @@ export async function recordCashDeposit(
   note?: string,
   timestamp?: Date,
 ): Promise<Operation> {
+  assertFinitePositive(amount, 'Deposit amount')
   return db.transaction(
     'rw',
     [db.portfolios, db.holdings, db.cashAccounts, db.fxTransactions, db.fxLots, db.operations, db.snapshots],
     async () => {
-      const opTimestamp = timestamp ?? new Date()
+      const opTimestamp = normalizeTimestamp(timestamp)
 
       const snapshotBefore = await captureSnapshot(portfolioId)
       snapshotBefore.timestamp = new Date(opTimestamp.getTime() - 1)
@@ -132,11 +156,12 @@ export async function recordCashWithdrawal(
   note?: string,
   timestamp?: Date,
 ): Promise<Operation> {
+  assertFinitePositive(amount, 'Withdrawal amount')
   return db.transaction(
     'rw',
     [db.portfolios, db.holdings, db.cashAccounts, db.fxTransactions, db.fxLots, db.operations, db.snapshots],
     async () => {
-      const opTimestamp = timestamp ?? new Date()
+      const opTimestamp = normalizeTimestamp(timestamp)
 
       const snapshotBefore = await captureSnapshot(portfolioId)
       snapshotBefore.timestamp = new Date(opTimestamp.getTime() - 1)
@@ -197,11 +222,19 @@ export async function recordFxExchange(
   params: FxExchangeParams,
   timestamp?: Date,
 ): Promise<FxExchangeResult> {
+  if (params.fromCurrency === params.toCurrency) {
+    throw new Error('FX exchange currencies must differ.')
+  }
+  assertFinitePositive(params.fromAmount, 'FX fromAmount')
+  assertFinitePositive(params.toAmount, 'FX toAmount')
+  assertFinitePositive(params.rate, 'FX rate')
+  assertFiniteNonNegative(params.fees, 'FX fees')
+
   return db.transaction(
     'rw',
     [db.portfolios, db.holdings, db.cashAccounts, db.fxTransactions, db.fxLots, db.operations, db.snapshots],
     async () => {
-      const opTimestamp = timestamp ?? new Date()
+      const opTimestamp = normalizeTimestamp(timestamp)
 
       const snapshotBefore = await captureSnapshot(portfolioId)
       snapshotBefore.timestamp = new Date(opTimestamp.getTime() - 1)
@@ -374,4 +407,3 @@ export async function getLatestFxRate(portfolioId: string): Promise<number | nul
   const lots = await loadLotsForPortfolio(portfolioId)
   return engineGetLatestFxRate(lots)
 }
-

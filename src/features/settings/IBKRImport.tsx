@@ -17,71 +17,17 @@
 import { useState, useRef, useMemo, useCallback } from 'react'
 import { Upload, AlertTriangle, CheckCircle2, Info, Loader2, X } from 'lucide-react'
 import { useHoldings } from '@/db/hooks'
-import { createTradeOperation } from '@/db/operationService'
+import { importIBKRTradesAtomically, type IBKRImportRow } from '@/services/ibkrImportService'
 import { parseIBKRActivityCSV } from '@/lib/ibkrParser'
 import type { IBKRTrade } from '@/lib/ibkrParser'
-import { db } from '@/db'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { cn } from '@/lib/utils'
-import type { Sleeve, Holding } from '@/types'
-
-// ─── Auto-create helpers ──────────────────────────────────────────────────────
-
-const UNASSIGNED_SLEEVE_NAME  = 'Unassigned'
-const UNASSIGNED_SLEEVE_COLOR = '#9ca3af'  // gray-400
-
-/** Returns currency based on ticker: digits-first → TWD (e.g. 0050), else USD. */
-function inferCurrency(ticker: string): 'USD' | 'TWD' {
-  return /^\d/.test(ticker) ? 'TWD' : 'USD'
-}
-
-async function getOrCreateUnassignedSleeve(portfolioId: string): Promise<string> {
-  const existing = await db.sleeves
-    .where('portfolioId').equals(portfolioId)
-    .filter(s => s.name === UNASSIGNED_SLEEVE_NAME)
-    .first()
-  if (existing) return existing.id
-  const sleeve: Sleeve = {
-    id: crypto.randomUUID(), portfolioId,
-    name: UNASSIGNED_SLEEVE_NAME, color: UNASSIGNED_SLEEVE_COLOR,
-    targetAllocationPct: 0,
-  }
-  await db.sleeves.add(sleeve)
-  return sleeve.id
-}
-
-/**
- * Returns the holdingId for ticker. Creates a new legacy holding in the
- * "Unassigned" sleeve if none exists (any status).
- */
-async function getOrCreateLegacyHolding(
-  portfolioId: string,
-  ticker: string,
-): Promise<{ holdingId: string; created: boolean }> {
-  const upper = ticker.toUpperCase()
-  const existing = await db.holdings
-    .where('portfolioId').equals(portfolioId)
-    .filter(h => h.ticker.toUpperCase() === upper)
-    .first()
-  if (existing) return { holdingId: existing.id, created: false }
-
-  const sleeveId = await getOrCreateUnassignedSleeve(portfolioId)
-  const holding: Holding = {
-    id: crypto.randomUUID(), portfolioId, sleeveId,
-    ticker: upper, name: upper,
-    status: 'legacy',
-    targetAllocationPct: 0, driftThresholdPct: 0,
-    currency: inferCurrency(ticker),
-  }
-  await db.holdings.add(holding)
-  return { holdingId: holding.id, created: true }
-}
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-interface TradeRow {
+interface TradeRow extends IBKRImportRow {
   trade: IBKRTrade
   /** holdingId assigned by auto-match or user selection. null = skip. undefined = unresolved. */
   holdingId: string | null | undefined
@@ -229,62 +175,19 @@ export function IBKRImport({ portfolioId }: IBKRImportProps) {
     setImporting(true)
     setImportError(null)
 
-    let created = 0
-    let skipped = 0
-    const newLegacyTickers: string[] = []
-    const rationale = `Imported from IBKR Activity Statement (${filename ?? 'unknown'})`
-
-    for (const row of rows) {
-      if (row.holdingId === null) { skipped++; continue }
-
-      let holdingId = row.holdingId
-
-      // Auto-create legacy holding for unresolved tickers
-      if (!holdingId) {
-        try {
-          const result = await getOrCreateLegacyHolding(portfolioId, row.trade.symbol)
-          holdingId = result.holdingId
-          if (result.created) newLegacyTickers.push(row.trade.symbol.toUpperCase())
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err)
-          setImportError(`Failed to create legacy holding for ${row.trade.symbol}: ${msg}`)
-          setImporting(false)
-          return
-        }
-      }
-
-      const { trade } = row
-      const side: 'BUY' | 'SELL' = trade.quantity > 0 ? 'BUY' : 'SELL'
-      const shares = Math.abs(trade.quantity)
-
-      try {
-        await createTradeOperation(portfolioId, {
-          type: side,
-          entries: [{
-            holdingId,
-            side,
-            shares,
-            pricePerShare: trade.tradePrice,
-            fees: trade.commFee,
-          }],
-          rationale,
-          timestamp: trade.dateTime,
-        })
-        created++
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err)
-        setImportError(`Failed on ${trade.symbol} (${fmtDate(trade.dateTime)}): ${msg}`)
-        setImporting(false)
-        return
-      }
+    try {
+      const result = await importIBKRTradesAtomically(portfolioId, rows, filename ?? undefined)
+      setImporting(false)
+      setImportResult(result)
+      setRows([])
+      setFilename(null)
+      setParseErrors([])
+      setSkippedRows(0)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      setImportError(msg)
+      setImporting(false)
     }
-
-    setImporting(false)
-    setImportResult({ created, skipped, newLegacyTickers })
-    setRows([])
-    setFilename(null)
-    setParseErrors([])
-    setSkippedRows(0)
   }
 
   function handleReset() {
