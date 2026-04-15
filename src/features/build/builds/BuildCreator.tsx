@@ -13,7 +13,7 @@ import { db } from '@/db/database'
 import { useBacktestStore } from '@/stores/backtestStore'
 import { useUIStore } from '@/stores/uiStore'
 import { runBacktest } from '@/engine/backtest'
-import type { Build, BuildHolding, RebalanceTrigger, TickerSearchResult } from '@/types'
+import type { Build, BuildForm, RebalanceTrigger, TickerSearchResult } from '@/types'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -21,20 +21,6 @@ interface BuildCreatorProps {
   onDone: (buildId: string) => void
   onCancel: () => void
   editBuild?: Build
-}
-
-interface BuildForm {
-  name: string
-  holdings: BuildHolding[]
-  dcaAmount: string
-  dcaCurrency: 'USD' | 'TWD'
-  dcaFrequency: 'weekly' | 'biweekly' | 'monthly'
-  startDate: string
-  endDate: string
-  rebalanceStrategy: 'soft' | 'hard' | 'none'
-  rebalanceTriggers: RebalanceTrigger[]
-  thresholdPct: string
-  periodicFrequency: 'monthly' | 'quarterly' | 'annually'
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────

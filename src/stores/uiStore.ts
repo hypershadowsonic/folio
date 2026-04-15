@@ -13,6 +13,7 @@ export type BuildTabId =
   | 'build-dashboard'
   | 'builds'
   | 'compare'
+  | 'lab'
   | 'build-settings'
 
 /** Union of all tab IDs across both modes */

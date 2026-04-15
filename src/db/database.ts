@@ -14,6 +14,7 @@ import type {
   Benchmark,
   Compare,
   EntityLink,
+  LabDraft,
 } from '@/types'
 
 // PortfolioSnapshot has no id/portfolioId in the domain type (it's always
@@ -41,6 +42,7 @@ export class FolioDB extends Dexie {
   benchmarks!:      Table<Benchmark>
   compares!:        Table<Compare>
   entityLinks!:     Table<EntityLink>
+  labDraft!:        Table<LabDraft>
 
   constructor() {
     super('folio-db')
@@ -180,6 +182,32 @@ export class FolioDB extends Dexie {
       benchmarks:      'id, ticker, createdAt, isFavorite',
       compares:        'id, createdAt, isFavorite',
       entityLinks:     'id, sourceBuildId, sourceFolioId, targetBuildId, targetFolioId',
+    })
+
+    /**
+     * Version 6 — Lab draft table.
+     *
+     * Adds `labDraft` for persisting the Lab tab's A/B maker state, shared
+     * controls, and backtest results across page reloads. Stores a single
+     * singleton document (id = 'singleton').
+     * No data upgrade needed — new empty table.
+     */
+    this.version(6).stores({
+      portfolios:      'id, createdAt',
+      holdings:        'id, portfolioId, sleeveId, ticker, status, [portfolioId+status]',
+      sleeves:         'id, portfolioId',
+      cashAccounts:    'id, portfolioId, currency, [portfolioId+currency]',
+      fxTransactions:  'id, portfolioId, timestamp',
+      fxLots:          'id, fxTransactionId, timestamp, [fxTransactionId+timestamp]',
+      operations:      'id, portfolioId, timestamp, type, tag, [portfolioId+timestamp], [portfolioId+type]',
+      ammunitionPools: 'portfolioId',
+      snapshots:       'id, portfolioId, timestamp, [portfolioId+timestamp]',
+      priceCaches:     'ticker, fetchedAt',
+      builds:          'id, createdAt, isFavorite',
+      benchmarks:      'id, ticker, createdAt, isFavorite',
+      compares:        'id, createdAt, isFavorite',
+      entityLinks:     'id, sourceBuildId, sourceFolioId, targetBuildId, targetFolioId',
+      labDraft:        'id',
     })
   }
 }

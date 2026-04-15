@@ -5,7 +5,7 @@ import {
   BarChart2,
   Settings,
   Layers,
-  GitCompare,
+  FlaskConical,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { PortfolioTabId, BuildTabId } from '@/stores/uiStore'
@@ -24,7 +24,7 @@ const PORTFOLIO_TABS: { id: PortfolioTabId; label: string; Icon: React.FC<{ clas
 const BUILD_TABS: { id: BuildTabId; label: string; Icon: React.FC<{ className?: string }> }[] = [
   { id: 'build-dashboard', label: 'Dashboard', Icon: LayoutDashboard },
   { id: 'builds',          label: 'Builds',    Icon: Layers },
-  { id: 'compare',         label: 'Compare',   Icon: GitCompare },
+  { id: 'lab',             label: 'Lab',        Icon: FlaskConical },
   { id: 'build-settings',  label: 'Settings',  Icon: Settings },
 ]
 

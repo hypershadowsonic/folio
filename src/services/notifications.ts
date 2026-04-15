@@ -1,34 +1,53 @@
 /**
- * notifications.ts — PWA push notification stubs (Phase 7).
+ * notifications.ts — Browser notification helpers.
  *
- * Phase 5: console.log only — no real push.
- * Phase 7: replace with real Service Worker + Web Push API.
+ * Uses the Web Notifications API. No server-side push or VAPID required.
+ * Notifications only fire when the app is open (foreground notifications).
+ *
+ * Callers:
+ *   - requestNotificationPermission() — call once on app start or on user opt-in
+ *   - sendDriftAlert(summary) — called by drift monitor when thresholds are exceeded
  */
 
 import type { PortfolioDriftSummary } from '@/engine/drift'
+
+const ICON = '/folio-icon-192.png'
 
 // ─── requestNotificationPermission ───────────────────────────────────────────
 
 /**
  * Requests browser notification permission from the user.
- * Phase 7 stub — always returns false.
+ * Returns true if permission was granted (or was already granted).
  */
 export async function requestNotificationPermission(): Promise<boolean> {
-  console.log('[notifications] requestNotificationPermission — stub (Phase 7 implements real push)')
-  return false
+  if (!('Notification' in window)) return false
+  if (Notification.permission === 'granted') return true
+  if (Notification.permission === 'denied') return false
+
+  const result = await Notification.requestPermission()
+  return result === 'granted'
 }
 
 // ─── sendDriftAlert ───────────────────────────────────────────────────────────
 
 /**
- * Sends a push notification alerting the user that drift thresholds are exceeded.
- * Phase 7 stub — logs to console only.
+ * Fires a browser notification when portfolio drift thresholds are exceeded.
+ * No-ops silently if permission is not granted or the API is unavailable.
  */
 export async function sendDriftAlert(summary: PortfolioDriftSummary): Promise<void> {
+  if (!('Notification' in window) || Notification.permission !== 'granted') return
+
   const { overallHealth, criticalCount, warningCount } = summary
-  console.log(
-    `[notifications] sendDriftAlert: ${overallHealth}`,
-    `(${criticalCount} critical, ${warningCount} warning)`,
-    '— stub (Phase 7)',
-  )
+
+  if (overallHealth === 'healthy') return
+
+  const title = overallHealth === 'action-needed'
+    ? `⚠ Folio: ${criticalCount} holding${criticalCount !== 1 ? 's' : ''} need rebalancing`
+    : `Folio: ${warningCount} holding${warningCount !== 1 ? 's' : ''} approaching drift threshold`
+
+  const body = overallHealth === 'action-needed'
+    ? `${criticalCount} critical drift${criticalCount !== 1 ? 's' : ''} detected. Open Folio to review.`
+    : `${warningCount} holding${warningCount !== 1 ? 's' : ''} nearing drift limit. Monitor or rebalance soon.`
+
+  new Notification(title, { body, icon: ICON })
 }

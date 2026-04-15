@@ -365,6 +365,49 @@ export interface Compare {
   lastCompareResult?: CompareResult
 }
 
+// ─── Lab / BuildForm ─────────────────────────────────────────────────────────
+
+/**
+ * Form state shape for Build creation and Lab makers.
+ * String fields are raw input values (for number/date inputs).
+ */
+export interface BuildForm {
+  name: string
+  holdings: BuildHolding[]
+  dcaAmount: string          // raw string for number input
+  dcaCurrency: 'USD' | 'TWD'
+  dcaFrequency: 'weekly' | 'biweekly' | 'monthly'
+  startDate: string          // YYYY-MM-DD
+  endDate: string            // YYYY-MM-DD
+  rebalanceStrategy: 'soft' | 'hard' | 'none'
+  rebalanceTriggers: RebalanceTrigger[]
+  thresholdPct: string       // raw string for number input
+  periodicFrequency: 'monthly' | 'quarterly' | 'annually'
+}
+
+export interface LabMakerState {
+  loadedBuildId?: string
+  config: BuildForm
+  backtest?: BacktestResult
+  isStale: boolean
+}
+
+export interface LabDraft {
+  id: 'singleton'
+  buildA: LabMakerState
+  buildB: LabMakerState
+  sharedControls: {
+    startDate: string    // YYYY-MM-DD
+    endDate: string      // YYYY-MM-DD
+    dcaCurrency: 'USD' | 'TWD'
+    dcaFrequency: 'weekly' | 'biweekly' | 'monthly'
+    dcaAmount: number
+  }
+  benchmarkTicker?: string
+  benchmarkResult?: BacktestResult
+  updatedAt: string
+}
+
 // ─── Lineage ──────────────────────────────────────────────────────────────────
 
 export interface EntityLink {

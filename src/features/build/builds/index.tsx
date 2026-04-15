@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { BarChart2 } from 'lucide-react'
+import { BarChart2, GitCompare } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { db } from '@/db/database'
@@ -200,7 +200,17 @@ export function Builds() {
           <h1 className="text-xl font-bold">Builds</h1>
           <p className="text-sm text-muted-foreground">Backtests and benchmarks</p>
         </div>
-        <div className="relative shrink-0">
+        <div className="flex items-center gap-2 shrink-0">
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => { setEditingCompare(undefined); setView('create-compare') }}
+            className="flex items-center gap-1.5"
+          >
+            <GitCompare className="h-3.5 w-3.5" />
+            Compare
+          </Button>
+          <div className="relative">
           <Button size="sm" onClick={() => setAddOpen(true)}>+ Add</Button>
           {addOpen && (
             <>
@@ -227,6 +237,7 @@ export function Builds() {
               </div>
             </>
           )}
+          </div>
         </div>
       </div>
 

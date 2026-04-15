@@ -1,6 +1,6 @@
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db } from './database'
-import type { Build, Benchmark, Compare, PriceCache, EntityLink } from '@/types'
+import type { Build, Benchmark, Compare, PriceCache, EntityLink, LabDraft } from '@/types'
 
 // ─── Builds ───────────────────────────────────────────────────────────────────
 
@@ -115,4 +115,26 @@ export function usePriceCache(ticker: string | undefined): PriceCache | undefine
     },
     [ticker],
   )
+}
+
+// ─── Lab draft ────────────────────────────────────────────────────────────────
+
+/**
+ * Returns the current Lab draft (singleton row), or undefined if none exists.
+ */
+export function useLabDraft(): LabDraft | undefined {
+  return useLiveQuery(
+    () => db.labDraft.get('singleton'),
+    [],
+  )
+}
+
+/** Persists the Lab draft to IndexedDB. */
+export async function saveLabDraft(draft: LabDraft): Promise<void> {
+  await db.labDraft.put(draft)
+}
+
+/** Clears the Lab draft from IndexedDB. */
+export async function clearLabDraft(): Promise<void> {
+  await db.labDraft.delete('singleton')
 }
